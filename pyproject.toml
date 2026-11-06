@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "looper"
+dynamic = ["version"]
+description = "Multi-agent forefront: route a task to a playbook loop (TDD, ReAct, Best-of-N, ...) and run it across agent CLIs, hosted APIs and local models, adapted to team size and model tier"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Adam Colyer" }]
+keywords = ["agents", "llm", "cli", "orchestration", "claude", "codex", "grok", "antigravity"]
+dependencies = [
+  "typer>=0.12.0",
+  "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "build>=1.0"]
+keyring = ["keyring>=24"]
+
+[project.scripts]
+looper = "looper.cli:main"
+
+[tool.hatch.version]
+path = "src/looper/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/looper"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/looper", "tests", "tools", "docs", "README.md", "looper.example.json", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
