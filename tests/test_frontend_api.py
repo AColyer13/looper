@@ -39,7 +39,7 @@ def test_version_json():
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
     assert data["name"] == "looper"
-    assert data["version"] == "0.4.1"
+    assert data["version"] == "0.5.0"
     assert data["api_version"] == API_VERSION == 1
     assert "run_events" in data["capabilities"]
     assert api.version_info() == data
@@ -313,7 +313,7 @@ def test_role_label_passthrough_in_events():
 def test_version_lists_ask_stdin_capability():
     r = runner.invoke(app, ["version", "--json"])
     data = json.loads(r.output)
-    assert data["version"] == "0.4.1"
+    assert data["version"] == "0.5.0"
     assert "ask_stdin" in data["capabilities"]
     assert data["api_version"] == 1
 
@@ -322,17 +322,24 @@ def test_ask_long_prompt_via_stdin_e2e(monkeypatch):
     """>200KB persona prompt reaches ask() intact when piped via --stdin (mocked runner)."""
     captured: dict = {}
 
-    def fake_ask(pol, agent_name, prompt, **kwargs):
+    def fake_ask(pol, agent_name, prompt=None, **kwargs):
+        req = kwargs.get("request") or {}
+        text = prompt if prompt is not None else req.get("prompt", "")
         captured["agent"] = agent_name
-        captured["len"] = len(prompt)
-        captured["head"] = prompt[:20]
+        captured["len"] = len(text)
+        captured["head"] = text[:20]
         return {
             "ok": True,
-            "text": f"got {len(prompt)} chars",
+            "text": f"got {len(text)} chars",
+            "tool_calls": [],
+            "finish_reason": "stop",
+            "protocol": "none",
+            "messages": [],
             "agent": {"name": agent_name, "kind": "cli", "provider": "cli", "model": agent_name, "tier": "frontier"},
             "seconds": 0.01,
             "error": None,
             "usage": None,
+            "warnings": [],
         }
 
     monkeypatch.setattr("looper.cli.frontend_api.ask", fake_ask)
@@ -350,9 +357,15 @@ def test_ask_long_prompt_via_stdin_e2e(monkeypatch):
 def test_ask_prompt_file_and_dash(tmp_path, monkeypatch):
     captured = {}
 
-    def fake_ask(pol, agent_name, prompt, **kwargs):
-        captured["prompt"] = prompt
-        return {"ok": True, "text": prompt, "agent": {"name": agent_name}, "seconds": 0, "error": None, "usage": None}
+    def fake_ask(pol, agent_name, prompt=None, **kwargs):
+        req = kwargs.get("request") or {}
+        text = prompt if prompt is not None else req.get("prompt", "")
+        captured["prompt"] = text
+        return {
+            "ok": True, "text": text, "tool_calls": [], "finish_reason": "stop",
+            "protocol": "none", "messages": [], "agent": {"name": agent_name},
+            "seconds": 0, "error": None, "usage": None, "warnings": [],
+        }
 
     monkeypatch.setattr("looper.cli.frontend_api.ask", fake_ask)
     f = tmp_path / "persona.txt"
