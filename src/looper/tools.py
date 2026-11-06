@@ -244,14 +244,15 @@ def _loads_lenient(text: str) -> Any:
         return json.loads(cleaned)
 
 
-def parse_json_block(text: str, tools: list[ToolSpec], *, max_calls: int | None = None) -> tuple[str, list[dict[str, Any]], list[str]]:
+def parse_json_block(text: str, tools: list[ToolSpec], *, max_calls: int | None = None) -> tuple[str, list[dict[str, Any]], list[str], str]:
     """Strip a `` ```looper-tools `` block (or bare {tool_calls:...}) from *text*.
 
-    Returns ``(clean_text, tool_calls, warnings)``.
+    Returns ``(clean_text, tool_calls, warnings, finish_reason)`` where
+    ``finish_reason`` is ``stop`` (no block), ``tool_calls``, or ``invalid_tool_calls``.
     """
     warnings: list[str] = []
     if not text:
-        return "", [], warnings
+        return "", [], warnings, "stop"
     body = None
     cleaned = text
     m = _FENCE_RE.search(text)
@@ -264,22 +265,23 @@ def parse_json_block(text: str, tools: list[ToolSpec], *, max_calls: int | None 
             body = m2.group(0)
             cleaned = (text[: m2.start()] + text[m2.end() :]).strip()
     if body is None:
-        return text.strip(), [], warnings
+        return text.strip(), [], warnings, "stop"
     try:
         data = _loads_lenient(body)
     except json.JSONDecodeError as exc:
         warnings.append(f"malformed looper-tools JSON block: {exc}")
-        return text.strip(), [], warnings
+        return text.strip(), [], warnings, "invalid_tool_calls"
     if isinstance(data, dict) and "tool_calls" in data:
         raw = data.get("tool_calls") or []
     elif isinstance(data, list):
         raw = data
     else:
         warnings.append("looper-tools block must be {\"tool_calls\": [...]} or an array")
-        return cleaned, [], warnings
+        return cleaned, [], warnings, "invalid_tool_calls"
     calls, w = validate_tool_calls(raw, tools, max_calls=max_calls)
     warnings.extend(w)
-    return cleaned, calls, warnings
+    finish = finish_reason_after_validation(calls, attempted=True)
+    return cleaned, calls, warnings, finish
 
 
 def json_block_instructions(tools: list[ToolSpec], *, max_calls: int | None = None) -> str:
@@ -602,6 +604,28 @@ def messages_to_ollama(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- provider adapters (response side)
 
 
+def finish_reason_after_validation(
+    valid_calls: list[dict[str, Any]],
+    *,
+    attempted: bool,
+    provider_finish: str | None = None,
+) -> str:
+    """Map validated tool calls to a public finish_reason (api_version 1, additive).
+
+    When the provider (or a json_block) clearly attempted tool calls but every
+    call failed validation, return ``invalid_tool_calls`` instead of ``stop`` so
+    callers that loop on ``finish_reason == "tool_calls"`` do not treat the turn
+    as a successful plain-text finish. Details stay in ``warnings``.
+    """
+    if valid_calls:
+        return "tool_calls"
+    if attempted:
+        return "invalid_tool_calls"
+    if provider_finish in ("length", "max_tokens") or provider_finish == "incomplete":
+        return "length"
+    return "stop"
+
+
 def extract_native_anthropic(data: dict[str, Any], tools: list[ToolSpec], *, max_calls: int | None) -> tuple[str, list[dict[str, Any]], str, list[str]]:
     text_parts: list[str] = []
     raw_calls: list[dict[str, Any]] = []
@@ -620,12 +644,14 @@ def extract_native_anthropic(data: dict[str, Any], tools: list[ToolSpec], *, max
             )
     calls, warnings = validate_tool_calls(raw_calls, tools, max_calls=max_calls)
     stop = data.get("stop_reason") or "end_turn"
-    if calls and stop in ("tool_use", "end_turn", None):
-        finish = "tool_calls"
-    elif stop == "max_tokens":
+    attempted = bool(raw_calls) or stop == "tool_use"
+    if stop == "max_tokens" and not calls and not attempted:
         finish = "length"
     else:
-        finish = "stop"
+        finish = finish_reason_after_validation(
+            calls, attempted=attempted,
+            provider_finish="length" if stop == "max_tokens" else None,
+        )
     return "".join(text_parts).strip(), calls, finish, warnings
 
 
@@ -652,12 +678,11 @@ def extract_native_openai_chat(data: dict[str, Any], tools: list[ToolSpec], *, m
         )
     calls, warnings = validate_tool_calls(raw_calls, tools, max_calls=max_calls)
     fr = choices[0].get("finish_reason") or "stop"
-    if calls or fr == "tool_calls":
-        finish = "tool_calls" if calls else "stop"
-    elif fr == "length":
-        finish = "length"
-    else:
-        finish = "stop"
+    attempted = bool(raw_calls) or fr == "tool_calls"
+    finish = finish_reason_after_validation(
+        calls, attempted=attempted,
+        provider_finish=fr if fr == "length" else None,
+    )
     return text, calls, finish, warnings
 
 
@@ -687,12 +712,10 @@ def extract_native_openai_responses(data: dict[str, Any], tools: list[ToolSpec],
         pass
     calls, warnings = validate_tool_calls(raw_calls, tools, max_calls=max_calls)
     status = data.get("status") or ""
-    if calls:
-        finish = "tool_calls"
-    elif status == "incomplete":
-        finish = "length"
-    else:
-        finish = "stop"
+    finish = finish_reason_after_validation(
+        calls, attempted=bool(raw_calls),
+        provider_finish="length" if status == "incomplete" else None,
+    )
     return "".join(text_parts).strip(), calls, finish, warnings
 
 
@@ -712,7 +735,7 @@ def extract_native_ollama(data: dict[str, Any], tools: list[ToolSpec], *, max_ca
             }
         )
     calls, warnings = validate_tool_calls(raw_calls, tools, max_calls=max_calls)
-    finish = "tool_calls" if calls else "stop"
+    finish = finish_reason_after_validation(calls, attempted=bool(raw_calls))
     return text, calls, finish, warnings
 
 

@@ -183,11 +183,30 @@ def order_members(members: list[Member], role: RoleSpec, pref: list[str]) -> lis
 
 
 def context_budget(m: Member, policy: Policy) -> tuple[int, int]:
-    """(per-variable char limit, whole-prompt char limit) for this agent."""
-    whole = m.tier.max_context_chars
-    if m.info.context_tokens:
-        whole = min(whole, int(m.info.context_tokens * policy.defaults.chars_per_token * policy.defaults.context_fill))
-    per_var = min(policy.defaults.max_context_chars, whole)
+    """(per-variable char limit, whole-prompt char limit) for this agent.
+
+    When the agent *explicitly* sets ``context_window`` or ``num_ctx``, that window
+    *raises* the clip budget above the tier default::
+
+        whole = int(tokens * chars_per_token * context_fill)   # default fill 0.75
+
+    Tier ``max_context_chars`` stays the default when the agent declares nothing
+    (inherited tier ``num_ctx`` alone does not raise). A smaller resolved
+    ``context_tokens`` can still tighten the tier ceiling.
+    """
+    declared = [int(v) for v in (m.agent.context_window, m.agent.num_ctx) if v]
+    if declared:
+        tokens = max(declared)
+        whole = int(tokens * policy.defaults.chars_per_token * policy.defaults.context_fill)
+        per_var = whole
+    else:
+        whole = m.tier.max_context_chars
+        if m.info.context_tokens:
+            whole = min(
+                whole,
+                int(m.info.context_tokens * policy.defaults.chars_per_token * policy.defaults.context_fill),
+            )
+        per_var = min(policy.defaults.max_context_chars, whole)
     return max(per_var, 500), max(whole, 1000)
 
 

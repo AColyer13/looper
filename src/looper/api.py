@@ -564,10 +564,10 @@ def ask(
 
     # CLI / FakeRunner path: parse json_block from text when the runner didn't
     if res.ok and proto == "json_block" and tool_specs and not tool_calls:
-        text, tool_calls, w = toolmod.parse_json_block(text, tool_specs, max_calls=mt_limit)
+        text, tool_calls, w, block_finish = toolmod.parse_json_block(text, tool_specs, max_calls=mt_limit)
         warnings.extend(w)
-        if tool_calls:
-            finish = "tool_calls"
+        if block_finish != "stop":
+            finish = block_finish
 
     if proto == "none" and tool_specs:
         # Ensure we never return tool_calls for tiny-tier refusal

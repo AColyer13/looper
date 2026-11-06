@@ -233,12 +233,10 @@ class HttpRunner:
             else:
                 text = extract_text(a.api_style or "openai", data)
                 if protocol == "json_block" and tools:
-                    text, tool_calls, w = toolmod.parse_json_block(
+                    text, tool_calls, w, finish = toolmod.parse_json_block(
                         text, tools, max_calls=inv.max_tool_calls,
                     )
                     warnings.extend(w)
-                    if tool_calls:
-                        finish = "tool_calls"
         except (ValueError, AttributeError, TypeError) as exc:
             return CallResult(
                 a.name, pseudo, False, "", returncode=status, error=f"bad response: {exc}",
@@ -246,7 +244,8 @@ class HttpRunner:
             )
 
         # Native tool_calls with empty text is a valid "I need a tool" turn.
-        if not text.strip() and not tool_calls:
+        # invalid_tool_calls with no valid calls (and maybe empty text) is still a real turn.
+        if not text.strip() and not tool_calls and finish not in ("tool_calls", "invalid_tool_calls"):
             return CallResult(
                 a.name, pseudo, False, "", returncode=status, seconds=secs,
                 error="empty response (thinking models can spend the whole output budget; "
