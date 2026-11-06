@@ -1,7 +1,7 @@
 {
   "$id": "looper-team-spec",
   "spec_version": 1,
-  "looper_version": "0.5.1",
+  "looper_version": "0.5.2",
   "description": "Capability tiers, role taxonomy and the role-assignment / degradation algorithm used by looper. Language-neutral so other apps (e.g. the-office) can mirror it.",
   "team_limits": {
     "max_agents": 5,
@@ -10,7 +10,7 @@
     "max_best_of_n": 5,
     "single_agent_samples": 2,
     "chars_per_token": 3.5,
-    "context_fill": 0.5,
+    "context_fill": 0.75,
     "unknown_local_tier": "medium"
   },
   "abstract_roles": [
@@ -507,7 +507,7 @@
     "8. parallel (Best-of-N): n = min(stage.n, distinct capable, max_best_of_n). One capable agent: if kind is api/local and tier.best_of_n -> n = min(stage.n, single_agent_samples) at temperatures spread 0.2..0.9; else n = 1 and the judge acts as self-critique.",
     "9. map (Orchestrator->Workers): max_items = min(stage.max_items, max tier.max_map_items of capable workers); <=3 if the orchestrator stage was under_tier; one-member team -> sequential; local workers -> at most max_parallel_local concurrent calls per local server.",
     "10. Iterations: loop max_iterations x min(tier.iteration_multiplier of body-stage agents), ceil, min 1.",
-    "11. Prompts: whole prompt clipped (head+tail) to min(tier.max_context_chars, context_tokens*chars_per_token*context_fill); tiers with simplify_prompts get a short 'do one thing' prefix; text-only agents on tool roles get a 'propose diffs/commands, do not claim execution' prefix; map sources on tiers with structured_output unreliable|fair are asked for a numbered list.",
+    "11. Prompts: whole prompt clipped (head+tail) to int(context_tokens*chars_per_token*context_fill) when the agent declares a window (context_window/num_ctx/context_tokens; may exceed tier.max_context_chars), else tier.max_context_chars; tiers with simplify_prompts get a short 'do one thing' prefix; text-only agents on tool roles get a 'propose diffs/commands, do not claim execution' prefix; map sources on tiers with structured_output unreliable|fair are asked for a numbered list.",
     "12. Team size: hard cap defaults.max_agents (5); warn above defaults.recommended_agents (3)."
   ],
   "degradation_order": [

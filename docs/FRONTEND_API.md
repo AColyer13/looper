@@ -1,4 +1,4 @@
-# looper Frontend API (api_version 1, package 0.5.1)
+# looper Frontend API (api_version 1, package 0.5.2)
 
 Stable, versioned machine interface for apps that sit on top of looper
 (e.g. a themed UI). **looper stays persona-agnostic** — frontends may attach
@@ -17,7 +17,7 @@ looper version --json
 ```json
 {
   "name": "looper",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "api_version": 1,
   "capabilities": [
     "version", "doctor", "plan", "run_events", "ask", "ask_stdin",
@@ -289,7 +289,11 @@ Schema: [`tool_call.schema.json`](./tool_call.schema.json).
 ````
 
 Invalid / unknown / schema-failing calls go into `warnings` and are **not** returned
-in `tool_calls` (so the caller never executes them).
+in `tool_calls` (so the caller never executes them). If the provider (or a
+`json_block`) clearly attempted tools but **every** call failed validation,
+`finish_reason` is `invalid_tool_calls` (not `stop`) so multi-step loops do not
+treat the turn as a finished plain-text answer. Callers can inspect `warnings`
+and optionally send error `tool_results` on a follow-up turn.
 
 ### Multi-step loop (caller-driven; looper is stateless)
 
@@ -305,6 +309,11 @@ for (;;) {
   const res = await ask(req);          // CLI --request-json or POST /v1/ask
   showAsCharacter(res.text);
   messages = res.messages;             // provider-neutral; just send back
+  if (res.finish_reason === "invalid_tool_calls") {
+    // Provider tried tools; all failed validation — see res.warnings. Break or
+    // send synthetic error tool_results and continue, depending on your UX.
+    break;
+  }
   if (res.finish_reason !== "tool_calls" || !res.tool_calls.length) break;
   toolResults = [];
   for (const tc of res.tool_calls) {

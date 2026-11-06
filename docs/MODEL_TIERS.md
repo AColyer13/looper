@@ -35,8 +35,20 @@ weights-only GGUF sizes (UD‑Q4_K_XL / Q8_0) from [7] unless noted; add KV cach
 Context windows: current open models advertise long native windows (Qwen3.5/3.6/3.8: 262K; gpt‑oss: 128K;
 [7], [8], [10]). What you *actually* get locally is whatever the server allocates. Ollama now picks a
 default based on VRAM: **4k tokens under 24 GiB**, 32k at 24–48 GiB, 256k at 48 GiB or more [9]. looper
-therefore sends an explicit `num_ctx` per tier (Ollama) and trims each prompt to
-`min(tier.max_context_chars, context_tokens × 3.5 chars × 0.5)`.
+therefore sends an explicit `num_ctx` per tier (Ollama) and trims each `looper run`
+prompt to a char budget driven by the **model's declared window** when present:
+
+```
+if context_window / num_ctx / context_tokens is set:
+    whole = int(tokens × chars_per_token × context_fill)   # defaults: 3.5 × 0.75
+else:
+    whole = tier.max_context_chars                         # tier ceiling as default
+```
+
+A 256k-token model therefore gets about `262144 × 3.5 × 0.75 ≈ 688k` chars of
+input budget even when its capability tier is `small`/`medium` (whose tier
+ceilings are much smaller). The 0.75 fill leaves ~25% of the window for the
+model's output. `looper ask` still does not char-clip message history by tier.
 
 ## The user's example names vs real models
 
@@ -100,7 +112,8 @@ How the loops adapt from 1 to 5 agents (see `docs/team_spec.json` for the exact 
    and a hosted frontier model for the few lead calls (plan, judge). Hosted Qwen is also cheap if
    privacy isn't a concern [15].
 4. **Set context deliberately.** Ollama's VRAM-based default can be as small as 4k [9]. looper requests
-   a tier-sized `num_ctx` and trims prompts to fit.
+   a tier-sized `num_ctx` by default; set the agent's `context_window` / `num_ctx` (e.g. 262144) to
+   raise the `looper run` clip budget to that window × 3.5 × 0.75.
 5. **Leave room for thinking.** Thinking models spend output tokens on reasoning, and caps under about
    2–4k can come back empty [15]. looper's small+ tiers use ≥ 4k output tokens, turns thinking off for
    tiny/small on Ollama (`think: false`), and reports "empty response" so the fallback agent takes over.
