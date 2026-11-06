@@ -145,7 +145,7 @@ def build_members(policy: Policy, available: dict[str, str], force_agent: str | 
 
 # --------------------------------------------------------------------------- helpers
 
-def allows(m: Member, role: RoleSpec, policy: Policy) -> bool:
+def allows(m: Member, role: RoleSpec) -> bool:
     abstract = role.abstract
     if m.tier.roles and abstract not in m.tier.roles:
         return False
@@ -196,7 +196,7 @@ def max_tokens_for(m: Member) -> int:
 
 
 def adapt_prompt(prompt: str, m: Member, plan: StagePlan | None, policy: Policy) -> str:
-    from looper.executor import clip
+    from looper.textutil import clip
     _, whole = context_budget(m, policy)
     prefix = ""
     if plan and plan.text_only and not m.agent.has_tools:
@@ -246,30 +246,30 @@ def adapt(policy: Policy, loop: LoopSpec, members: list[Member], *, force_agent:
 
         if force_agent:
             cands = members[:]
-            if cands and not allows(cands[0], role, policy):
+            if cands and not allows(cands[0], role):
                 sp.status = "under_tier"
                 sp.notes.append(f"--agent {force_agent} (tier {cands[0].tier.name}) is below the tier for role "
                                 f"'{role.abstract}'")
         elif pinned:
             if pinned not in by_name:
                 warn.append(f"assign pin '{pinned}' for role '{s.role}' is not on the ready team; falling back")
-                capable = [m for m in members if allows(m, role, policy)]
+                capable = [m for m in members if allows(m, role)]
                 cands = order_members(capable, role, pref) or order_members(
                     members, RoleSpec(role.name, role.abstract, lead=True, tools=role.tools), pref)
-                if cands and not allows(cands[0], role, policy):
+                if cands and not allows(cands[0], role):
                     sp.status = "under_tier"
             else:
                 pin_m = by_name[pinned]
                 cands = [pin_m] + [m for m in members if m.name != pinned]
                 sp.notes.append(f"pinned by assign-json to {pinned}")
-                if not allows(pin_m, role, policy):
+                if not allows(pin_m, role):
                     sp.status = "under_tier"
                     need = _min_tier_for(role, policy)
                     warn.append(f"assign pin '{pinned}' (tier {pin_m.tier.name}) is under-tier for "
                                 f"role '{s.role}' (needs ≥{need})")
                     sp.notes.append(f"under-tier pin (needs ≥{need})")
         else:
-            capable = [m for m in members if allows(m, role, policy)]
+            capable = [m for m in members if allows(m, role)]
             cands = order_members(capable, role, pref)
             if lite and s.optional and seg != "loop":
                 sp.status = "skipped"

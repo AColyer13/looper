@@ -18,10 +18,10 @@ from looper.assign import agent_endpoint, build_members, default_available
 from looper.config import ConfigError, merge_config
 from looper.credentials import get_key, key_source, mask, set_key, status as key_status
 from looper.detect import detect_agents
-from looper.events import API_VERSION
+from looper import API_VERSION
 from looper.policy import AgentSpec, Policy, build_policy
 from looper.runners import (CallResult, DispatchRunner, Invocation, PromptTooLongError,
-                           Runner, describe_call, prepare_invocation)
+                           Runner, prepare_invocation)
 from looper.tiers import resolve_tier
 
 CAPABILITIES = [
@@ -202,7 +202,7 @@ def validate_assign(policy: Policy, assign: dict[str, str]) -> list[str]:
         m = members[agent]
         # try concrete role first, then as abstract
         role_spec = policy.roles.get(role) or RoleSpec(name=role, abstract=role)
-        if not allows(m, role_spec, policy):
+        if not allows(m, role_spec):
             warnings.append(
                 f"assigned agent '{agent}' (tier {m.tier.name}) is under-tier for role '{role}' "
                 f"(abstract '{role_spec.abstract}')")
@@ -230,11 +230,9 @@ def doctor(policy: Policy, *, probe: bool = True) -> dict[str, Any]:
         st = statuses.get(n)
         ti = resolve_tier(a, policy)
         key_env = a.api_key_env
-        key_ok = True
         key_present = False
         if a.kind == "api" and key_env and not a.key_optional:
             key_present = bool(get_key(key_env))
-            key_ok = key_present
             if not key_present:
                 problems.append(f"agent '{n}': missing ${key_env}")
         elif a.kind == "api" and key_env:

@@ -17,7 +17,6 @@ degradation (skipped/merged stages, smaller Best-of-N, sequential fan-out).
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -67,52 +66,7 @@ class Budget:
             self.calls += 1
 
 
-# --------------------------------------------------------------------------- templating
-
-_VAR = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
-
-
-def clip(text: str, limit: int) -> str:
-    if limit <= 0 or len(text) <= limit:
-        return text
-    half = limit // 2
-    return text[:half] + f"\n...[{len(text) - limit} chars clipped]...\n" + text[-half:]
-
-
-def render(template: str, ctx: dict[str, Any], limit: int = 20000) -> str:
-    outputs: dict[str, str] = ctx.get("outputs", {})
-
-    def sub(m: re.Match[str]) -> str:
-        key = m.group(1)
-        if key.startswith("outputs."):
-            val = outputs.get(key.split(".", 1)[1])
-            return clip(val, limit) if val else "(none yet)"
-        val = ctx.get(key)
-        if val is None or val == "":
-            return "(none yet)" if key in ("previous", "previous_artifact") else ""
-        return clip(str(val), limit)
-
-    return _VAR.sub(sub, template)
-
-
-def parse_items(text: str, limit: int) -> list[str]:
-    """Split an orchestrator/hypothesis output into subtasks: JSON array, else bullets/numbers."""
-    text = text or ""
-    m = re.search(r"\[.*\]", text, re.DOTALL)
-    if m:
-        try:
-            data = json.loads(m.group(0))
-            items = [str(x if not isinstance(x, dict) else json.dumps(x)).strip() for x in data]
-            items = [i for i in items if i]
-            if items:
-                return items[:limit]
-        except json.JSONDecodeError:
-            pass
-    items = [mm.group(1).strip() for mm in re.finditer(r"^\s*(?:[-*\u2022]|\d+[.)])\s+(.+)$", text, re.MULTILINE)]
-    if items:
-        return items[:limit]
-    return [text.strip()] if text.strip() else []
-
+from looper.textutil import parse_items, render
 
 # --------------------------------------------------------------------------- records
 
@@ -219,7 +173,7 @@ class Executor:
         if self.force_agent:
             return [m.name for m in members]
         role = self.policy.role(stage.role)
-        capable = [m for m in members if allows(m, role, self.policy)] or members
+        capable = [m for m in members if allows(m, role)] or members
         return [m.name for m in order_members(capable, role, self.preference(stage))]
 
     def adapt(self, loop_name: str) -> Adaptation:
@@ -399,11 +353,6 @@ class Executor:
         return path
 
     # ---- internals
-    def _max_iterations(self, loop: LoopSpec) -> int:
-        if not loop.iterate:
-            return 0
-        return self.max_iterations or loop.iterate.max_iterations
-
     def _timeout(self, stage: StageSpec, agent: str | None) -> float:
         if stage.timeout_seconds:
             return float(stage.timeout_seconds)

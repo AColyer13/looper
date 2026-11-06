@@ -946,7 +946,7 @@ def init_cmd(
     path: Path = typer.Option(Path("looper.json"), "--path", "-p", help="Where to write the config."),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing file."),
 ) -> None:
-    """Write the full sample config (all playbook loops) to ./looper.json."""
+    """Write the bundled default config (all playbook loops) to ./looper.json."""
     if path.exists() and not force:
         err.print(f"[red]{path} exists[/red] (use --force)")
         raise typer.Exit(1)
