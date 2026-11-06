@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from looper.config import ConfigError, load_raw_config
+from looper.trim import HistoryTrimSpec, parse_history_trim
 
 STAGE_TYPES = ("single", "parallel", "map")
 AGENT_KINDS = ("cli", "api", "local")
@@ -202,6 +203,7 @@ class Policy:
     roles: dict[str, RoleSpec] = field(default_factory=dict)
     providers: dict[str, ProviderSpec] = field(default_factory=dict)
     team: list[str] | None = None  # None = legacy: every configured agent that is available
+    history_trim: HistoryTrimSpec = field(default_factory=HistoryTrimSpec)
 
     def role(self, name: str) -> RoleSpec:
         return self.roles.get(name) or RoleSpec(name=name, abstract=name)
@@ -520,6 +522,18 @@ def build_policy(raw: dict[str, Any], *, source: str = "dict", path: Path | None
                 errors.append(f"team: {len(team)} agents exceeds max_agents={defaults.max_agents} "
                               "(diminishing returns past ~3-5; see docs/MODEL_TIERS.md)")
 
+
+    history_trim = HistoryTrimSpec()
+    try:
+        # top-level history_trim preferred; also accept defaults.history_trim
+        raw_ht = raw.get("history_trim")
+        if raw_ht is None and isinstance(d.get("history_trim"), (dict, bool)):
+            raw_ht = d.get("history_trim")
+        if raw_ht is not None:
+            history_trim = parse_history_trim(raw_ht)
+    except ValueError as exc:
+        errors.append(f"history_trim: {exc}")
+
     if errors:
         raise ConfigError("Invalid looper config:\n  - " + "\n  - ".join(errors))
 
@@ -537,6 +551,7 @@ def build_policy(raw: dict[str, Any], *, source: str = "dict", path: Path | None
         roles=roles,
         providers=providers,
         team=list(team) if team else None,
+        history_trim=history_trim,
     )
 
 

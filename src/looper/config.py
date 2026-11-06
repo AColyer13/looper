@@ -88,6 +88,16 @@ def merge_config(base: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
                     agents.pop(name, None)
                 elif isinstance(spec, dict):
                     agents[name] = {**agents.get(name, {}), **deepcopy(spec)}
+        elif key == "history_trim":
+            if value is False or value is None:
+                out[key] = False
+            elif isinstance(value, dict):
+                base_ht = out.get(key, {})
+                if not isinstance(base_ht, dict):
+                    base_ht = {}
+                out[key] = _deep_merge(base_ht, value)
+            else:
+                out[key] = deepcopy(value)
         elif key in ("defaults", "router") and isinstance(value, dict):
             out[key] = _deep_merge(out.get(key, {}), value)
         elif key in ("tiers", "roles", "providers") and isinstance(value, dict):

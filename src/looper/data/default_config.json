@@ -1697,5 +1697,16 @@
         "max_wall_seconds": 1800
       }
     }
+  },
+  "history_trim": {
+    "enabled": false,
+    "budget_fill": 0.5,
+    "write_recent_turns": 20,
+    "result_keep_recent_turns": 8,
+    "head_lines": 40,
+    "tail_lines": 40,
+    "max_tool_result_lines": 100,
+    "keep_error_lines": true,
+    "keep_recent_turns": 20
   }
 }
