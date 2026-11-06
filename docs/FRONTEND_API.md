@@ -1,4 +1,4 @@
-# looper Frontend API (api_version 1, package 0.5.2)
+# looper Frontend API (api_version 1, package 0.6.0)
 
 Stable, versioned machine interface for apps that sit on top of looper
 (e.g. a themed UI). **looper stays persona-agnostic** — frontends may attach
@@ -17,11 +17,11 @@ looper version --json
 ```json
 {
   "name": "looper",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "api_version": 1,
   "capabilities": [
     "version", "doctor", "plan", "run_events", "ask", "ask_stdin",
-    "ask_tools", "tool_calls", "tool_results", "serve",
+    "ask_tools", "tool_calls", "tool_results", "history_trim", "serve",
     "team_override", "assign_override", "role_labels", "meta",
     "keys", "models_discover"
   ]
@@ -143,7 +143,7 @@ Binds **localhost only** by default (`--host 127.0.0.1`). Optional auth:
 | POST | `/v1/plan` | `{task, loop?, agent?, team?, assign?, role_labels?, meta?, max_iterations?, cwd?}` |
 | POST | `/v1/run` | Same; responds with chunked `application/x-ndjson`, header `X-Looper-Run-Id` |
 | POST | `/v1/runs/{id}/cancel` | Cancel an in-flight run |
-| POST | `/v1/ask` | `{agent, prompt?, system?, tools?, messages?, tool_results?, max_tool_calls?, protocol?, team?, cwd?, timeout?, max_tokens?, temperature?}` |
+| POST | `/v1/ask` | `{agent, prompt?, system?, tools?, messages?, tool_results?, max_tool_calls?, protocol?, history_trim?, team?, cwd?, timeout?, max_tokens?, temperature?}` |
 | GET | `/v1/team` | Current team (no secrets) |
 | PUT | `/v1/team` | Set in-process team override (same schema as `--team-json`) |
 | PUT | `/v1/keys/{provider}` | `{value: "..."}` stores key; returns `{env, source, masked}` only |
@@ -164,7 +164,7 @@ looper ask --json --agent sonnet --prompt-file ./persona.txt
 looper ask --json --agent sonnet - < ./persona.txt
 ```
 
-Capability flags: `ask_stdin`, `ask_tools`, `tool_calls`, `tool_results` in
+Capability flags: `ask_stdin`, `ask_tools`, `tool_calls`, `tool_results`, `history_trim` in
 `looper version --json`.
 
 For CLI agents, prompts longer than ~100 KB are delivered via the agent's
@@ -186,12 +186,43 @@ that read the prompt from stdin.
   "seconds": 1.2,
   "error": null,
   "usage": null,
-  "warnings": []
+  "warnings": [],
+  "trim": {"applied": false, "before_tokens": 12, "after_tokens": 12, "budget": null, "steps": []}
 }
 ```
 
 Plain text with an empty `tool_calls` array is always a valid response when no
 tools were offered, or the model chose not to call any.
+
+### History trimming (`trim` report)
+
+Opt-in via config `history_trim` or per-request `history_trim` (object / `true` /
+`false`). Default **off**. When enabled and history is over
+`context_window × budget_fill`, looper trims a **copy** for the provider only.
+
+* Response `messages` is always the **full untrimmed** conversation (plus the new
+  assistant turn). The caller owns history and must not rely on looper to persist
+  stubs.
+* Additive field `trim`:
+
+```json
+{
+  "applied": true,
+  "before_tokens": 74000,
+  "after_tokens": 12900,
+  "budget": 16000,
+  "steps": [
+    {"lever": "writes", "tokens": 49200, "stubbed": 18},
+    {"lever": "results", "tokens": 42900, "trimmed": 12},
+    {"lever": "collapse", "tokens": 12900, "collapsed": true, "dropped": 140}
+  ]
+}
+```
+
+When disabled or under budget: `applied: false`, `steps: []`, and (if a window
+is known) `budget` may still be set. Token estimate = total message chars /
+`defaults.chars_per_token` (3.5).
+
 
 ### Offering caller-owned tools
 

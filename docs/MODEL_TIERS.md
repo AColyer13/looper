@@ -48,7 +48,7 @@ else:
 A 256k-token model therefore gets about `262144 × 3.5 × 0.75 ≈ 688k` chars of
 input budget even when its capability tier is `small`/`medium` (whose tier
 ceilings are much smaller). The 0.75 fill leaves ~25% of the window for the
-model's output. `looper ask` still does not char-clip message history by tier.
+model's output. `looper ask` still does not char-clip message history by tier; enable `history_trim` (see README) for local models with **≤32k** context so long tool traces fit the window.
 
 ## The user's example names vs real models
 

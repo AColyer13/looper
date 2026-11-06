@@ -27,7 +27,7 @@ looper agents                                  # every configured agent and whet
 cd looper
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-looper --version        # looper 0.5.2
+looper --version        # looper 0.6.0
 pytest                  # all tests use fakes, so no real CLIs are needed
 ```
 
@@ -425,6 +425,60 @@ and why frontends should call `looper ask --stdin` / `--prompt-file` for long pe
 For the child CLI itself, set `"prompt_via": "stdin"` (always pipe) or `"prompt_via": "auto"` (argv for short
 prompts, stdin above ~100 KB). With `"arg"` (default), a prompt longer than 100 KB raises a clear error instead of
 silently truncating against `ARG_MAX`.
+
+## History trimming
+
+`looper ask` can optionally shrink long tool-heavy conversations before they are
+sent to the model. **Off by default** (`history_trim.enabled: false`) so 0.5.x
+callers see byte-identical provider payloads when disabled.
+
+**When it triggers.** Only if enabled and estimated history tokens
+(`chars / defaults.chars_per_token`, default 3.5) exceed
+`context_window × budget_fill` (default fill **0.5**). Window comes from the
+agent's `context_window` / `num_ctx`, else the tier default. Under budget → no
+change.
+
+**Steps (stop early once under budget):**
+
+1. **Stub writes** older than `write_recent_turns` (20): Write/write_file
+   `content` becomes `[wrote <path>, N lines, sha8=… — content omitted]`.
+   Trivial `cat`/`tee` heredoc bash writes are stubbed the same way when
+   detectable; otherwise skipped.
+2. **Truncate tool results** older than `result_keep_recent_turns` (8) that
+   exceed `max_tool_result_lines` (100): keep `head_lines`/`tail_lines` (40/40)
+   plus every error-matching line (`error|fail|exception|traceback|assert|panic`)
+   with ±1 line of context and a clear `…[N lines elided]…` marker.
+3. **Collapse middle**: keep system + first user + last `keep_recent_turns` (20)
+   verbatim; replace the middle with one ledger message (files touched, commands
+   with ok/error, key errors). Cut points preserve tool_call ↔ tool result pairing.
+
+**Expected savings** on the Fable coding-agent sample (stacked): ~**34%** after
+writes, ~**42%** after results, ~**83%** after collapse.
+
+**Enable** in `~/.config/looper/looper.json` (or project config):
+
+```json
+{
+  "history_trim": {
+    "enabled": true,
+    "budget_fill": 0.5,
+    "write_recent_turns": 20,
+    "result_keep_recent_turns": 8,
+    "head_lines": 40,
+    "tail_lines": 40,
+    "max_tool_result_lines": 100,
+    "keep_error_lines": true,
+    "keep_recent_turns": 20
+  }
+}
+```
+
+Or per request: `looper ask --request-json '{"agent":"…","messages":[…],"history_trim":{"enabled":true}}'`
+(`"history_trim": false` disables for that call). The response `messages` field
+stays the **full** caller-owned history; inspect `trim` for what the provider saw.
+
+Recommended for **local models with ≤32k** context — see `docs/MODEL_TIERS.md`.
+
 
 ## Tool calls (caller-owned)
 

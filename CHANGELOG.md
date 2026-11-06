@@ -1,6 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- **History trimming** for `looper ask` (opt-in, default **off**). When estimated history exceeds `context_window × budget_fill` (default 0.5), apply in order until under budget: (1) stub old Write/write_file bodies (and trivial bash heredoc writes), (2) head+tail old tool results while keeping error lines, (3) deterministic middle-collapse ledger. Pairing (`tool_call_id` / Anthropic `tool_use`↔`tool_result`) is preserved.
+- Config: top-level `history_trim` in `default_config.json` + policy validation. Per-request override via `ask --request-json` / `history_trim` on the payload (`false` disables). Additive; `api_version` stays **1**.
+- Response: caller-owned `messages` remain the **full untrimmed** conversation; additive `trim` report `{applied, before_tokens, after_tokens, budget, steps}`. Capability flag `history_trim`.
+- Token estimate = chars / `defaults.chars_per_token` (3.5). No new dependencies.
+- Docs: README "History trimming", FRONTEND_API + tool_call.schema.json, MODEL_TIERS note for local ≤32k.
+
 ## 0.5.2
+
 
 - Golden tool-call fixtures from MoreThought/Fable (Apache-2.0) under `tests/fixtures/fable/` + `tests/test_golden_tool_calls.py` (parser eval only; no training use; no full traces in-repo).
 - When a provider reports tool calls but every call fails validation, `finish_reason` is now `invalid_tool_calls` (additive api_version 1 enum value) instead of `stop`. Details remain in `warnings`. Applies to openai_chat / anthropic / ollama / openai_responses extractors and `json_block`.
