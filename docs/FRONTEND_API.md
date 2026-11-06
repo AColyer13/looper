@@ -1,4 +1,4 @@
-# looper Frontend API (api_version 1, package 0.6.0)
+# looper Frontend API (api_version 1, package 0.7.0)
 
 Stable, versioned machine interface for apps that sit on top of looper
 (e.g. a themed UI). **looper stays persona-agnostic** — frontends may attach
@@ -17,13 +17,14 @@ looper version --json
 ```json
 {
   "name": "looper",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "api_version": 1,
   "capabilities": [
     "version", "doctor", "plan", "run_events", "ask", "ask_stdin",
     "ask_tools", "tool_calls", "tool_results", "history_trim", "serve",
     "team_override", "assign_override", "role_labels", "meta",
-    "keys", "models_discover"
+    "keys", "models_discover",
+    "workspace", "skills", "mcp", "mcp_approval"
   ]
 }
 ```
@@ -59,6 +60,7 @@ Shared flags (plan / run / ask / doctor where relevant):
 * `--role-labels-json '{"planner":"Michael"}'` — opaque labels echoed in plan/events
 * `--meta key=value` (repeatable) / `--meta-json '{...}'` — opaque metadata echoed in events
 * `--loop NAME`, `--agent NAME`, `--max-iterations N`, `--cwd DIR`
+* `--project DIR` — project root (directory that contains `.looper/`). Otherwise looper walks upward from `--cwd` or the process cwd. Additive; omit it and behaviour matches 0.6 when no `.looper/` directory is present.
 
 **Keys never go on argv.** Pass them via the process environment or
 `looper keys set` / `PUT /v1/keys/{provider}`. Team JSON must not include key values.
@@ -139,11 +141,11 @@ Binds **localhost only** by default (`--host 127.0.0.1`). Optional auth:
 | Method | Path | Body / notes |
 |---|---|---|
 | GET | `/v1/version` | Same as `looper version --json` |
-| GET | `/v1/doctor?probe=0` | Same as doctor; HTTP 503 when not usable |
+| GET | `/v1/doctor?probe=0` | Same as doctor; HTTP 503 when not usable. Optional `project` and `cwd` query params. |
 | POST | `/v1/plan` | `{task, loop?, agent?, team?, assign?, role_labels?, meta?, max_iterations?, cwd?}` |
 | POST | `/v1/run` | Same; responds with chunked `application/x-ndjson`, header `X-Looper-Run-Id` |
 | POST | `/v1/runs/{id}/cancel` | Cancel an in-flight run |
-| POST | `/v1/ask` | `{agent, prompt?, system?, tools?, messages?, tool_results?, max_tool_calls?, protocol?, history_trim?, team?, cwd?, timeout?, max_tokens?, temperature?}` |
+| POST | `/v1/ask` | `{agent, prompt?, system?, tools?, messages?, tool_results?, max_tool_calls?, protocol?, history_trim?, team?, cwd?, project?, role?, approvals?, timeout?, max_tokens?, temperature?}` |
 | GET | `/v1/team` | Current team (no secrets) |
 | PUT | `/v1/team` | Set in-process team override (same schema as `--team-json`) |
 | PUT | `/v1/keys/{provider}` | `{value: "..."}` stores key; returns `{env, source, masked}` only |
@@ -226,8 +228,11 @@ is known) `budget` may still be set. Token estimate = total message chars /
 
 ### Offering caller-owned tools
 
-**looper never executes tools.** It only signals `tool_calls`; the frontend
-(e.g. the-office desk handlers) must approve, sandbox, and run them.
+**looper never executes caller-owned tools.** It signals them on `tool_calls`;
+the frontend (e.g. the-office desk handlers) must approve, sandbox, and run them.
+`load_skill` and MCP tools that the approval policy marks automatic are the
+exception: looper runs those inside the turn and records the results in
+`messages`. They are not included in `tool_calls`.
 
 Request (CLI or `POST /v1/ask`):
 
@@ -357,6 +362,84 @@ for (;;) {
   }
 }
 ```
+
+### MCP approval round-trip (`approval_required`)
+
+Additive on api_version 1. When no MCP server is configured, `ask` never returns
+this finish reason and the `pending` field is omitted.
+
+looper runs an MCP tool inside the turn only when the approval policy says
+`auto` (by default: annotation `readOnlyHint: true` and `destructiveHint` is not
+true). Anything else is **not** executed. The response looks like:
+
+```json
+{
+  "ok": true,
+  "text": "I need to write the note.",
+  "tool_calls": [],
+  "finish_reason": "approval_required",
+  "pending": [
+    {
+      "id": "call_ab12",
+      "tool": "mcp__notes__write_note",
+      "server": "notes",
+      "name": "write_note",
+      "args": {"text": "hello"},
+      "reason": "not_read_only",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false}
+    }
+  ],
+  "messages": []
+}
+```
+
+`pending[].reason` is one of `not_read_only`, `destructive`, `require_approval`,
+`approve_all`. `pending[].tool` is the name the model saw
+(`mcp__<server>__<tool>`). `pending[].name` is the tool on the server.
+
+`messages` already contains the assistant turn (with that call) and the results
+of any looper-owned tools that ran in the same batch (`load_skill`, auto MCP).
+Do not execute those yourself. They are not in `tool_calls`.
+
+If the model also requested a **caller-owned** tool, `finish_reason` is still
+`approval_required` and that tool is in `tool_calls` as it is today. Handle both.
+
+Resume on the next stateless call. Send the `messages` you were given, your
+`tool_results` for caller tools, and one approval per pending id:
+
+```json
+{
+  "agent": "sonnet",
+  "messages": [],
+  "tool_results": [],
+  "approvals": [
+    {"id": "call_ab12", "decision": "approve"},
+    {"id": "call_cd34", "decision": "deny", "reason": "not now"}
+  ]
+}
+```
+
+`decision` is `approve` or `deny` (`approved`/`denied`, `yes`/`no` are accepted).
+looper executes each approval, appends the tool result, and continues the turn.
+A deny list entry still refuses the call even if the user approved it.
+There is no server-side session: the arguments are read back out of `messages`.
+
+```js
+if (res.finish_reason === "approval_required") {
+  const toolResults = [];
+  for (const tc of res.tool_calls) {          // caller tools only
+    toolResults.push(await desk.execute(tc));
+  }
+  const approvals = res.pending.map((p) => ({
+    id: p.id,
+    decision: userAllows(p) ? "approve" : "deny",
+  }));
+  return ask({ agent, messages: res.messages, tool_results: toolResults, approvals });
+}
+```
+
+Same body on `POST /v1/ask`. `looper ask --request-json -` accepts `approvals`,
+`project`, and `role` on the request object.
 
 ### CLI self-editing caveat
 

@@ -111,7 +111,9 @@ def make_handler(state: ServeState) -> type[BaseHTTPRequestHandler]:
                     return _json_response(self, 200, api.version_info())
                 if path == "/v1/doctor":
                     probe = (qs.get("probe", ["1"])[0] != "0")
-                    doc = api.doctor(state.policy(), probe=probe)
+                    project = (qs.get("project") or [None])[0]
+                    cwd_q = (qs.get("cwd") or [None])[0]
+                    doc = api.doctor(state.policy(), probe=probe, cwd=cwd_q, project=project)
                     return _json_response(self, 200 if doc["usable"] else 503, doc)
                 if path == "/v1/team":
                     from looper.assign import default_available
@@ -212,7 +214,8 @@ def make_handler(state: ServeState) -> type[BaseHTTPRequestHandler]:
             warnings = api.validate_assign(pol, assign) if assign else []
             decision = route_prompt(task, pol, override=body.get("loop"))
             ex = Executor(pol, force_agent=body.get("agent"), assign=assign or None,
-                          max_iterations=body.get("max_iterations"), cwd=body.get("cwd"))
+                          max_iterations=body.get("max_iterations"), cwd=body.get("cwd"),
+                          project=body.get("project"))
             plan = api.enrich_plan(ex.plan(task, decision.loop, decision),
                                    role_labels=labels, meta=meta, assign=assign,
                                    assign_warnings=warnings)
@@ -284,6 +287,7 @@ def make_handler(state: ServeState) -> type[BaseHTTPRequestHandler]:
             try:
                 ex = Executor(pol, force_agent=body.get("agent"), assign=assign or None,
                               max_iterations=body.get("max_iterations"), cwd=body.get("cwd"),
+                              project=body.get("project"),
                               cancel=cancel, emitter=emitter, meta=meta, role_labels=labels)
                 result = ex.run(task, decision.loop, decision,
                                 write_transcript=not body.get("no_transcript", False))

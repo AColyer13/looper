@@ -125,6 +125,7 @@ class Executor:
         meta: dict[str, Any] | None = None,
         role_labels: dict[str, str] | None = None,
         max_output_chars: int = 100_000,
+        project: str | Path | None = None,
     ):
         self.policy = policy
         self.cancel = cancel or CancelToken()
@@ -153,6 +154,8 @@ class Executor:
         self.meta = dict(meta or {})
         self.role_labels = dict(role_labels or {})
         self.max_output_chars = max_output_chars
+        self.project = project
+        self._ws = None
 
     # ---- agent selection
     def preference(self, stage: StageSpec) -> list[str]:
@@ -165,7 +168,35 @@ class Executor:
         for a in self.members:  # team members not named in the strategy
             if a not in seen:
                 seen.append(a)
+        doc = self.workspace().role_doc(stage.role, self.policy.role(stage.role).abstract)
+        if doc and doc.model and doc.model in self.policy.agents:
+            seen = [doc.model, *[a for a in seen if a != doc.model]]
         return seen
+
+    def workspace(self):
+        if self._ws is None:
+            from looper.workspace import load_workspace
+            start = Path(self.cwd) if self.cwd else Path.cwd()
+            self._ws = load_workspace(
+                start=start, project=self.project,
+                policy_raw=self.policy.raw, policy_path=self.policy.path,
+            )
+        return self._ws
+
+    def _stage_context(self, stage: StageSpec, agent_name: str | None) -> tuple[str, list[str], dict[str, str]]:
+        """Prefix for the stage prompt, plus CLI-native argv/env. Empty when no workspace."""
+        from looper.cli_native import native_pass
+        ws = self.workspace()
+        agent = self.policy.agents.get(agent_name) if agent_name else None
+        native = native_pass(agent, ws) if agent is not None else None
+        text = ws.render(
+            role=stage.role,
+            abstract_role=self.policy.role(stage.role).abstract,
+            include_agents=not (native and native.passes_agents),
+            include_soul=True,
+            include_skills=False,
+        )
+        return text, list(native.extra_argv) if native else [], dict(native.extra_env) if native else {}
 
     def candidates(self, stage: StageSpec) -> list[str]:
         """Capable available agents for a stage, best first (no loop context)."""
@@ -200,12 +231,20 @@ class Executor:
             prompt = render(s.prompt, ctx, per_var)
             if m:
                 prompt = adapt_prompt(prompt, m, sp, self.policy)
+            prefix, native_argv, _native_env = self._stage_context(s, chosen or (self.preference(s)[0] if self.preference(s) else None))
+            if prefix:
+                prompt = prefix + "\n\n" + prompt
             ph = f"<prompt: {len(prompt)} chars>"
             if chosen:
                 argv = describe_call(self.policy.agents[chosen], self.available.get(chosen, ""), ph)
             else:  # show what *would* run with the top preference
                 first = self.policy.agents[self.preference(s)[0]]
                 argv = describe_call(first, first.binary, ph)
+            if native_argv:
+                if argv and (argv[-1] == ph or str(argv[-1]).startswith("<")):
+                    argv = [*argv[:-1], *native_argv, argv[-1]]
+                else:
+                    argv = [*argv, *native_argv]
             calls = s.n if s.type == "parallel" else (s.max_items if s.type == "map" else 1)
             return {
                 "stage": s.name, "segment": segment, "type": s.type, "role": s.role,
@@ -383,6 +422,9 @@ class Executor:
             agent = self.policy.agents[agent_name]
             m = self.members.get(agent_name)
             final = adapt_prompt(prompt, m, plan, self.policy) if m else prompt
+            prefix, native_argv, native_env = self._stage_context(stage, agent_name)
+            if prefix:
+                final = prefix + "\n\n" + final
             timeout = min(self._timeout(stage, agent_name), max(budget.remaining_seconds(), 1.0))
             endpoint = self.available.get(agent_name, "")
             try:
@@ -391,6 +433,8 @@ class Executor:
                     max_tokens=max_tokens_for(m) if m else None, temperature=temperature,
                     num_ctx=m.info.context_tokens if m and agent.kind == "local" else None,
                     disable_thinking=bool(m and m.tier.disable_thinking),
+                    extra_argv=native_argv,
+                    extra_env=native_env,
                 )
             except PromptTooLongError as exc:
                 res = CallResult(agent_name, [], False, "", error=str(exc))

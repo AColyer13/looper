@@ -70,6 +70,7 @@ class Invocation:
     protocol: str = "none"  # native | json_block | none
     max_tool_calls: int | None = None
     extra_argv: list[str] = field(default_factory=list)  # CLI safety flags when caller tools present
+    extra_env: dict = field(default_factory=dict)  # child env only; never placed on argv
 
 
 def prompt_byte_size(prompt: str) -> int:
@@ -159,7 +160,7 @@ class SubprocessRunner:
             return CallResult(inv.agent.name, list(inv.argv) if inv.argv else [], False, "",
                               error=str(exc), seconds=0.0)
 
-        env = {**os.environ, **inv.agent.env}
+        env = {**os.environ, **inv.agent.env, **(inv.extra_env or {})}
         t0 = time.monotonic()
         if self.cancel is not None:
             try:

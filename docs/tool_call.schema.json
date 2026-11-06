@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AColyer13/looper/docs/tool_call.schema.json",
-  "title": "looper ask tool-calling shapes (api_version 1, package >= 0.6.0)",
-  "description": "looper signals tool calls; the caller (e.g. the-office) owns execution and approval.",
+  "title": "looper ask tool-calling shapes (api_version 1, package >= 0.7.0)",
+  "description": "Caller-owned tool calls are signaled for the caller to run. looper executes load_skill and auto-approved MCP tools itself. Other MCP calls are returned on pending for approval.",
   "$defs": {
     "tool": {
       "type": "object",
@@ -71,6 +71,21 @@
         "max_tokens": { "type": "integer" },
         "temperature": { "type": "number" },
         "team": {},
+        "project": { "type": "string", "description": "Project root. Overrides walking up from cwd for .looper/." },
+        "role": { "type": "string", "description": "Role name; loads <project>/.looper/roles/<role>.md" },
+        "approvals": {
+          "type": "array",
+          "description": "Resume an approval_required turn. Stateless: arguments come from messages.",
+          "items": {
+            "type": "object",
+            "required": ["id", "decision"],
+            "properties": {
+              "id": { "type": "string" },
+              "decision": { "enum": ["approve", "deny"] },
+              "reason": { "type": "string" }
+            }
+          }
+        },
         "history_trim": {
           "description": "Per-request override; false disables. Additive api_version 1.",
           "oneOf": [
@@ -101,7 +116,24 @@
         "ok": { "type": "boolean" },
         "text": { "type": "string" },
         "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/tool_call" } },
-        "finish_reason": { "enum": ["stop", "tool_calls", "invalid_tool_calls", "length", "error"] },
+        "finish_reason": { "enum": ["stop", "tool_calls", "invalid_tool_calls", "length", "error", "approval_required"] },
+        "pending": {
+          "type": "array",
+          "description": "MCP calls looper did not run. Present when finish_reason is approval_required.",
+          "items": {
+            "type": "object",
+            "required": ["id", "tool", "server", "name", "args", "reason"],
+            "properties": {
+              "id": { "type": "string" },
+              "tool": { "type": "string", "description": "Exposed name mcp__<server>__<tool>" },
+              "server": { "type": "string" },
+              "name": { "type": "string", "description": "Tool name on the MCP server" },
+              "args": { "type": "object" },
+              "reason": { "type": "string", "enum": ["not_read_only", "destructive", "require_approval", "approve_all"] },
+              "annotations": { "type": "object" }
+            }
+          }
+        },
         "protocol": { "enum": ["native", "json_block", "none"] },
         "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
         "agent": { "type": "object" },
