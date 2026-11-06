@@ -478,7 +478,7 @@ CONFIG = {
         "max_best_of_n": 5,
         "single_agent_samples": 2,
         "chars_per_token": 3.5,
-        "context_fill": 0.5,
+        "context_fill": 0.75,
         "unknown_local_tier": "medium",
     },
     "tiers": TIERS,

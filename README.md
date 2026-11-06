@@ -27,7 +27,7 @@ looper agents                                  # every configured agent and whet
 cd looper
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-looper --version        # looper 0.5.1
+looper --version        # looper 0.5.2
 pytest                  # all tests use fakes, so no real CLIs are needed
 ```
 
@@ -314,7 +314,7 @@ Agent fields (api/local): `kind`, `provider`, `model`, `base_url`, `api_key_env`
 `context_window`, `num_ctx`, `max_output_tokens`, `roles` (restrict to these abstract roles), `tools`.
 Stage fields added in v0.3: `optional`, `mergeable`. New defaults: `max_agents` (5), `recommended_agents` (3),
 `max_parallel_local` (1), `max_best_of_n` (5), `single_agent_samples` (2), `chars_per_token` (3.5),
-`context_fill` (0.5), `unknown_local_tier` ("medium"). Without a `team`, every configured agent that is
+`context_fill` (0.75), `unknown_local_tier` ("medium"). Without a `team`, every configured agent that is
 ready may be used (the v0.2 behaviour).
 
 ### Schema
@@ -327,7 +327,8 @@ ready may be used (the v0.2 behaviour).
     "caps": { "max_total_calls": 20, "max_wall_seconds": 3600 },   // per-loop caps fall back to these
     "fallback_agents": ["claude", "codex", "grok", "agy"],          // appended to every stage's preference
     "fallback_on_error": true,       // a failed/timed-out call retries on the next installed CLI
-    "max_context_chars": 20000,      // each {{var}} is clipped (head+tail) to this size
+    "max_context_chars": 20000,      // per-var clip when no model window is declared
+    "context_fill": 0.75,            // fraction of declared window used as input budget
     "runs_dir": ".looper/runs",
     "version_probe_timeout": 3
   },
