@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AColyer13/looper/docs/tool_call.schema.json",
-  "title": "looper ask tool-calling shapes (api_version 1, package >= 0.5.2)",
+  "title": "looper ask tool-calling shapes (api_version 1, package >= 0.6.0)",
   "description": "looper signals tool calls; the caller (e.g. the-office) owns execution and approval.",
   "$defs": {
     "tool": {
@@ -70,7 +70,28 @@
         "timeout": { "type": "number" },
         "max_tokens": { "type": "integer" },
         "temperature": { "type": "number" },
-        "team": {}
+        "team": {},
+        "history_trim": {
+          "description": "Per-request override; false disables. Additive api_version 1.",
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "budget_fill": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                "write_recent_turns": { "type": "integer", "minimum": 0 },
+                "result_keep_recent_turns": { "type": "integer", "minimum": 0 },
+                "head_lines": { "type": "integer", "minimum": 0 },
+                "tail_lines": { "type": "integer", "minimum": 0 },
+                "max_tool_result_lines": { "type": "integer", "minimum": 0 },
+                "keep_error_lines": { "type": "boolean" },
+                "keep_recent_turns": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
       }
     },
     "ask_response": {
@@ -87,7 +108,22 @@
         "seconds": { "type": "number" },
         "error": { "type": ["string", "null"] },
         "usage": { "type": ["object", "null"] },
-        "warnings": { "type": "array", "items": { "type": "string" } }
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "trim": {
+          "type": "object",
+          "description": "What was sent to the provider; messages stay full/untrimmed.",
+          "properties": {
+            "applied": { "type": "boolean" },
+            "before_tokens": { "type": "integer" },
+            "after_tokens": { "type": "integer" },
+            "budget": { "type": ["integer", "null"] },
+            "steps": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            }
+          },
+          "required": ["applied", "before_tokens", "after_tokens", "steps"]
+        }
       }
     }
   }

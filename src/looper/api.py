@@ -23,6 +23,7 @@ from looper.policy import AgentSpec, Policy, build_policy
 from looper.runners import (CallResult, DispatchRunner, Invocation, PromptTooLongError,
                            Runner, prepare_invocation)
 from looper.tiers import resolve_tier
+from looper.trim import merge_history_trim, trim_history
 
 CAPABILITIES = [
     "version",
@@ -34,6 +35,7 @@ CAPABILITIES = [
     "ask_tools",
     "tool_calls",
     "tool_results",
+    "history_trim",
     "serve",
     "team_override",
     "assign_override",
@@ -472,12 +474,36 @@ def ask(
         # tiny tier refusal — still call the model for text, without tools
         pass
 
+    # History trimming (ask-only, v1): provider sees trimmed copy; caller gets full history.
+    window = None
+    for v in (agent.context_window, agent.num_ctx):
+        if v:
+            window = max(window or 0, int(v))
+    if window is None and m is not None and getattr(m.info, "context_tokens", None):
+        try:
+            window = int(m.info.context_tokens)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pass
+    if window is None and tier_spec is not None and tier_spec.num_ctx:
+        try:
+            window = int(tier_spec.num_ctx)
+        except (TypeError, ValueError):
+            pass
+    trim_spec = merge_history_trim(policy.history_trim, req.get("history_trim"))
+    provider_messages, trim_report_obj = trim_history(
+        effective_messages,
+        cfg=trim_spec,
+        context_window=window,
+        chars_per_token=policy.defaults.chars_per_token,
+    )
+    trim_report = trim_report_obj.to_dict()
+
     # CLI delivery uses a flattened prompt (system + conversation summary)
     if agent.kind == "cli":
         parts: list[str] = []
         if effective_system:
             parts.append(effective_system)
-        for msg in effective_messages:
+        for msg in provider_messages:
             if msg.get("role") == "system":
                 continue
             role = msg.get("role", "user")
@@ -534,6 +560,7 @@ def ask(
             "error": err,
             "usage": None,
             "warnings": list(proto_warnings) + list(extra.pop("warnings", [])),
+            "trim": trim_report,
         }
         out.update(extra)
         return out
@@ -545,7 +572,7 @@ def ask(
             num_ctx=m.info.context_tokens if m and agent.kind == "local" else None,
             disable_thinking=bool(m and m.tier.disable_thinking),
             system=effective_system,
-            messages=effective_messages if agent.kind != "cli" else [],
+            messages=provider_messages if agent.kind != "cli" else [],
             tools=tool_specs if proto != "none" else [],
             protocol=proto if proto != "none" else "none",
             max_tool_calls=mt_limit,
@@ -588,6 +615,7 @@ def ask(
         "error": res.error,
         "usage": res.usage,
         "warnings": warnings,
+        "trim": trim_report,
     }
     if not res.ok:
         out["stderr"] = res.stderr
