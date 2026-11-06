@@ -35,6 +35,18 @@ class CallResult:
     error: str | None = None
     timed_out: bool = False
     seconds: float = 0.0
+    # Tool-calling (ask path). Empty tool_calls + finish_reason "stop" = plain text.
+    tool_calls: list = None  # type: ignore[assignment]
+    finish_reason: str = "stop"  # stop | tool_calls | length | error
+    protocol: str = "none"  # native | json_block | none
+    warnings: list = None  # type: ignore[assignment]
+    usage: dict | None = None
+
+    def __post_init__(self) -> None:
+        if self.tool_calls is None:
+            self.tool_calls = []
+        if self.warnings is None:
+            self.warnings = []
 
 
 @dataclass
@@ -51,6 +63,13 @@ class Invocation:
     temperature: float | None = None
     num_ctx: int | None = None
     disable_thinking: bool = False
+    # Tool-calling (ask path). Caller owns execution; looper only signals.
+    system: str | None = None
+    messages: list = field(default_factory=list)  # provider-neutral conversation
+    tools: list = field(default_factory=list)  # list[ToolSpec]-like or dicts; http_runner normalizes
+    protocol: str = "none"  # native | json_block | none
+    max_tool_calls: int | None = None
+    extra_argv: list[str] = field(default_factory=list)  # CLI safety flags when caller tools present
 
 
 def prompt_byte_size(prompt: str) -> int:
@@ -124,6 +143,12 @@ class SubprocessRunner:
                 argv, use_stdin = list(inv.argv), bool(inv.use_stdin)
             else:
                 argv, use_stdin = prepare_cli_call(inv.agent, inv.binary_path, inv.prompt)
+            if inv.extra_argv:
+                # Insert extras before a trailing prompt arg when present.
+                if not use_stdin and argv and argv[-1] == inv.prompt:
+                    argv = [*argv[:-1], *list(inv.extra_argv), argv[-1]]
+                else:
+                    argv = [*argv, *list(inv.extra_argv)]
         except PromptTooLongError as exc:
             return CallResult(inv.agent.name, list(inv.argv) if inv.argv else [], False, "",
                               error=str(exc), seconds=0.0)
@@ -202,13 +227,22 @@ def prepare_invocation(
     **http_kw,
 ) -> Invocation:
     """Build an ``Invocation`` with argv / use_stdin resolved for CLI agents."""
+    extra = list(http_kw.pop("extra_argv", None) or [])
     if agent.kind == "cli":
         argv, use_stdin = prepare_cli_call(agent, binary_path, prompt)
-        return Invocation(agent, binary_path, prompt, timeout, cwd, argv, use_stdin=use_stdin, **http_kw)
+        if extra:
+            if not use_stdin and argv and argv[-1] == prompt:
+                argv = [*argv[:-1], *extra, argv[-1]]
+            else:
+                argv = [*argv, *extra]
+        return Invocation(
+            agent, binary_path, prompt, timeout, cwd, argv, use_stdin=use_stdin,
+            extra_argv=extra, **http_kw,
+        )
     return Invocation(
         agent, binary_path, prompt, timeout, cwd,
         [f"{agent.api_style}:{agent.base_url}", f"model={agent.model}", prompt],
-        use_stdin=False, **http_kw,
+        use_stdin=False, extra_argv=extra, **http_kw,
     )
 
 

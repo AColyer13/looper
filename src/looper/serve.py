@@ -219,14 +219,24 @@ def make_handler(state: ServeState) -> type[BaseHTTPRequestHandler]:
             _json_response(self, 200, plan)
 
         def _ask(self, body: dict[str, Any]) -> None:
-            prompt = (body.get("prompt") or body.get("task") or "").strip()
             agent = body.get("agent")
-            if not prompt or not agent:
-                raise ConfigError("agent and prompt are required")
+            if not agent:
+                raise ConfigError("agent is required")
+            prompt = body.get("prompt") or body.get("task")
+            has_conv = bool(prompt or body.get("messages") or body.get("tool_results"))
+            if not has_conv:
+                raise ConfigError("prompt, messages, or tool_results is required")
             pol = self._policy_from_body(body)
-            result = api.ask(pol, str(agent), prompt, cwd=body.get("cwd"),
-                             timeout=body.get("timeout"), max_tokens=body.get("max_tokens"),
-                             temperature=body.get("temperature"))
+            # Pass the full body as request so tools/messages/tool_results flow through.
+            result = api.ask(
+                pol, str(agent),
+                prompt=(str(prompt).strip() if isinstance(prompt, str) and prompt.strip() else None),
+                request=body,
+                cwd=body.get("cwd"),
+                timeout=body.get("timeout"),
+                max_tokens=body.get("max_tokens"),
+                temperature=body.get("temperature"),
+            )
             status = 200 if result["ok"] else 502
             _json_response(self, status, result)
 
