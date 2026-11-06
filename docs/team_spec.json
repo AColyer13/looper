@@ -1,0 +1,522 @@
+{
+  "$id": "looper-team-spec",
+  "spec_version": 1,
+  "looper_version": "0.4.1",
+  "description": "Capability tiers, role taxonomy and the role-assignment / degradation algorithm used by looper. Language-neutral so other apps (e.g. the-office) can mirror it.",
+  "team_limits": {
+    "max_agents": 5,
+    "recommended_agents": 3,
+    "max_parallel_local": 1,
+    "max_best_of_n": 5,
+    "single_agent_samples": 2,
+    "chars_per_token": 3.5,
+    "context_fill": 0.5,
+    "unknown_local_tier": "medium"
+  },
+  "abstract_roles": [
+    "classifier",
+    "coder",
+    "editor",
+    "formatter",
+    "generalist",
+    "judge",
+    "orchestrator",
+    "planner",
+    "researcher",
+    "reviewer",
+    "summarizer",
+    "tester",
+    "worker"
+  ],
+  "roles": {
+    "generalist": {
+      "abstract": "generalist",
+      "tools": true
+    },
+    "explorer": {
+      "abstract": "researcher",
+      "tools": true
+    },
+    "planner": {
+      "abstract": "planner",
+      "lead": true
+    },
+    "coder": {
+      "abstract": "coder",
+      "tools": true
+    },
+    "committer": {
+      "abstract": "coder",
+      "tools": true
+    },
+    "tester": {
+      "abstract": "tester",
+      "tools": true
+    },
+    "reviewer": {
+      "abstract": "reviewer",
+      "lead": true,
+      "diverse_from": "coder"
+    },
+    "evaluator": {
+      "abstract": "judge",
+      "lead": true,
+      "diverse_from": "coder"
+    },
+    "researcher": {
+      "abstract": "researcher",
+      "tools": true
+    },
+    "scout": {
+      "abstract": "researcher",
+      "tools": true
+    },
+    "investigator": {
+      "abstract": "researcher",
+      "tools": true
+    },
+    "responder": {
+      "abstract": "generalist",
+      "tools": true
+    },
+    "orchestrator": {
+      "abstract": "orchestrator",
+      "lead": true
+    },
+    "worker": {
+      "abstract": "worker",
+      "tools": true
+    },
+    "candidate": {
+      "abstract": "coder"
+    },
+    "judge": {
+      "abstract": "judge",
+      "lead": true
+    },
+    "skeptic": {
+      "abstract": "reviewer",
+      "lead": true
+    },
+    "writer": {
+      "abstract": "editor"
+    },
+    "grader": {
+      "abstract": "judge",
+      "lead": true,
+      "diverse_from": "editor"
+    }
+  },
+  "tiers": {
+    "tiny": {
+      "rank": 0,
+      "max_params_b": 1.5,
+      "roles": [
+        "summarizer",
+        "classifier",
+        "formatter"
+      ],
+      "examples": [
+        "qwen3.5:0.8b",
+        "gemma3:270m",
+        "qwen3:0.6b",
+        "llama3.2:1b"
+      ],
+      "num_ctx": 4096,
+      "max_output_tokens": 1024,
+      "max_context_chars": 6000,
+      "structured_output": "unreliable",
+      "iteration_multiplier": 0.34,
+      "can_orchestrate": false,
+      "max_map_items": 0,
+      "best_of_n": false,
+      "simplify_prompts": true,
+      "disable_thinking": true,
+      "note": "Utility only: summarize, classify, reformat. Multi-turn tool calling ~0-2% on BFCL."
+    },
+    "small": {
+      "rank": 1,
+      "max_params_b": 5,
+      "roles": [
+        "summarizer",
+        "classifier",
+        "formatter",
+        "generalist",
+        "worker",
+        "coder",
+        "tester",
+        "editor",
+        "researcher"
+      ],
+      "examples": [
+        "qwen3.5:2b",
+        "qwen3.5:4b",
+        "gemma4:e4b",
+        "phi4-mini:3.8b",
+        "llama3.2:3b"
+      ],
+      "num_ctx": 8192,
+      "max_output_tokens": 4096,
+      "max_context_chars": 12000,
+      "structured_output": "fair",
+      "iteration_multiplier": 0.67,
+      "can_orchestrate": false,
+      "max_map_items": 3,
+      "best_of_n": false,
+      "simplify_prompts": true,
+      "disable_thinking": true,
+      "note": "Simple single-file edits and tests; no planning, judging or orchestration."
+    },
+    "medium": {
+      "rank": 2,
+      "max_params_b": 15,
+      "roles": [
+        "summarizer",
+        "classifier",
+        "formatter",
+        "generalist",
+        "worker",
+        "coder",
+        "tester",
+        "editor",
+        "researcher",
+        "planner",
+        "reviewer",
+        "judge"
+      ],
+      "examples": [
+        "qwen3.5:9b",
+        "qwen3:14b",
+        "gpt-oss:20b",
+        "qwen3.6:35b-a3b",
+        "gemma4:26b-a4b"
+      ],
+      "num_ctx": 16384,
+      "max_output_tokens": 4096,
+      "max_context_chars": 24000,
+      "structured_output": "good",
+      "iteration_multiplier": 1.0,
+      "can_orchestrate": false,
+      "max_map_items": 4,
+      "best_of_n": true,
+      "simplify_prompts": false,
+      "disable_thinking": false,
+      "note": "Coder/tester; can plan and judge with care (lower agreement than 70B+ judges)."
+    },
+    "large": {
+      "rank": 3,
+      "max_params_b": 40,
+      "roles": [
+        "summarizer",
+        "classifier",
+        "formatter",
+        "generalist",
+        "worker",
+        "coder",
+        "tester",
+        "editor",
+        "researcher",
+        "planner",
+        "reviewer",
+        "judge",
+        "orchestrator"
+      ],
+      "examples": [
+        "qwen3.6:27b",
+        "qwen3.8:27b",
+        "gemma4:31b",
+        "gpt-oss:120b",
+        "qwen3.5:122b-a10b"
+      ],
+      "num_ctx": 32768,
+      "max_output_tokens": 8192,
+      "max_context_chars": 48000,
+      "structured_output": "reliable",
+      "iteration_multiplier": 1.0,
+      "can_orchestrate": true,
+      "max_map_items": 6,
+      "best_of_n": true,
+      "simplify_prompts": false,
+      "disable_thinking": false,
+      "note": "Full roles incl. planner/judge/orchestrator. Best local value per GB."
+    },
+    "xl": {
+      "rank": 4,
+      "max_params_b": null,
+      "roles": [
+        "summarizer",
+        "classifier",
+        "formatter",
+        "generalist",
+        "worker",
+        "coder",
+        "tester",
+        "editor",
+        "researcher",
+        "planner",
+        "reviewer",
+        "judge",
+        "orchestrator"
+      ],
+      "examples": [
+        "llama3.3:70b",
+        "qwen3.5:397b-a17b",
+        "llama4:scout (109b-a17b)"
+      ],
+      "num_ctx": 65536,
+      "max_output_tokens": 8192,
+      "max_context_chars": 80000,
+      "structured_output": "reliable",
+      "iteration_multiplier": 1.0,
+      "can_orchestrate": true,
+      "max_map_items": 6,
+      "best_of_n": true,
+      "simplify_prompts": false,
+      "disable_thinking": false,
+      "note": "Near-frontier locally; needs 48GB+ VRAM or large unified memory / expert offload."
+    },
+    "frontier": {
+      "rank": 5,
+      "max_params_b": null,
+      "roles": [
+        "summarizer",
+        "classifier",
+        "formatter",
+        "generalist",
+        "worker",
+        "coder",
+        "tester",
+        "editor",
+        "researcher",
+        "planner",
+        "reviewer",
+        "judge",
+        "orchestrator"
+      ],
+      "examples": [
+        "claude-opus-5-5",
+        "gpt-6-astra",
+        "grok-4.7",
+        "gemini-4-argon",
+        "any agent CLI"
+      ],
+      "num_ctx": null,
+      "max_output_tokens": 16000,
+      "max_context_chars": 120000,
+      "structured_output": "reliable",
+      "iteration_multiplier": 1.0,
+      "can_orchestrate": true,
+      "max_map_items": 8,
+      "best_of_n": true,
+      "simplify_prompts": false,
+      "disable_thinking": false,
+      "note": "Hosted frontier APIs and agent CLIs. Default tier for kind=cli and first-party APIs."
+    }
+  },
+  "effective_params": {
+    "dense": "total_params_b",
+    "moe": "sqrt(total_params_b * active_params_b)",
+    "note": "heuristic; parameter count is a weak predictor, allow manual override"
+  },
+  "name_parsing": {
+    "units": {
+      "m": 0.001,
+      "b": 1,
+      "t": 1000
+    },
+    "known_moe": {
+      "gpt-oss-20b": {
+        "total_b": 21.0,
+        "active_b": 3.6
+      },
+      "gpt-oss:20b": {
+        "total_b": 21.0,
+        "active_b": 3.6
+      },
+      "gpt-oss-120b": {
+        "total_b": 117.0,
+        "active_b": 5.1
+      },
+      "gpt-oss:120b": {
+        "total_b": 117.0,
+        "active_b": 5.1
+      },
+      "llama4:scout": {
+        "total_b": 109.0,
+        "active_b": 17.0
+      },
+      "llama-4-scout": {
+        "total_b": 109.0,
+        "active_b": 17.0
+      },
+      "llama4:maverick": {
+        "total_b": 400.0,
+        "active_b": 17.0
+      },
+      "llama-4-maverick": {
+        "total_b": 400.0,
+        "active_b": 17.0
+      },
+      "qwen3.8-flash-next": {
+        "total_b": 125.0,
+        "active_b": 6.0
+      }
+    },
+    "regex_order": [
+      {
+        "kind": "moe",
+        "pattern": "(?<![\\w.])(\\d+(?:\\.\\d+)?)\\s*([bt])[-_]?a(\\d+(?:\\.\\d+)?)\\s*([bm])(?![a-z])",
+        "example": "qwen3:30b-a3b -> 30B total, 3B active"
+      },
+      {
+        "kind": "n_x_m",
+        "pattern": "(?<![\\w.])(\\d+)x(\\d+(?:\\.\\d+)?)b(?![a-z])",
+        "example": "mixtral:8x7b -> 56B total, 14B active"
+      },
+      {
+        "kind": "effective",
+        "pattern": "(?<![a-z0-9])e(\\d+(?:\\.\\d+)?)b(?![a-z])",
+        "example": "gemma4:e4b -> 4B"
+      },
+      {
+        "kind": "plain",
+        "pattern": "(?<![a-z0-9.])(\\d+(?:\\.\\d+)?)\\s*([mbt])(?![a-z0-9])",
+        "example": "qwen3.5:9b -> 9B (last match wins)"
+      }
+    ],
+    "flags": "case-insensitive"
+  },
+  "detection": {
+    "ollama": {
+      "list": "GET {base}/api/tags -> models[].name, details.parameter_size, quantization_level",
+      "show": "POST {base}/api/show {model} -> model_info['general.parameter_count'], model_info['<general.architecture>.context_length'], <arch>.expert_count (MoE)",
+      "runtime_context": "request options.num_ctx (Ollama's own default depends on VRAM: 4k <24GiB, 32k 24-48GiB, 256k >=48GiB)"
+    },
+    "lmstudio": {
+      "list": "GET {root}/api/v1/models -> models[].key, params_string, max_context_length, quantization.name; fallback GET {root}/api/v0/models -> data[].id, max_context_length, quantization"
+    },
+    "vllm": {
+      "list": "GET {base}/models -> data[].id, max_model_len"
+    },
+    "llama_cpp": {
+      "list": "GET {base}/models -> data[].id, meta.n_params, meta.n_ctx_train"
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "kind": "api",
+      "vendor": "claude",
+      "api_style": "anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "context_window": 1000000,
+      "models": [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1"
+      ]
+    },
+    "openai": {
+      "kind": "api",
+      "vendor": "codex",
+      "api_style": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "context_window": 1050000,
+      "models": [
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-luna"
+      ]
+    },
+    "xai": {
+      "kind": "api",
+      "vendor": "grok",
+      "api_style": "openai",
+      "base_url": "https://api.x.ai/v1",
+      "api_key_env": "XAI_API_KEY",
+      "context_window": 500000,
+      "models": [
+        "grok-4.7",
+        "grok-build-0.1",
+        "grok-4.3"
+      ]
+    },
+    "google": {
+      "kind": "api",
+      "vendor": "agy",
+      "api_style": "openai",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key_env": "GEMINI_API_KEY",
+      "context_window": 1000000,
+      "models": [
+        "gemini-4-argon",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite"
+      ]
+    },
+    "openrouter": {
+      "kind": "api",
+      "api_style": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context_window": null,
+      "models": []
+    },
+    "ollama": {
+      "kind": "local",
+      "api_style": "ollama",
+      "base_url": "http://localhost:11434",
+      "api_key_env": null,
+      "context_window": null,
+      "models": []
+    },
+    "lmstudio": {
+      "kind": "local",
+      "api_style": "openai",
+      "base_url": "http://localhost:1234/v1",
+      "api_key_env": "LM_API_TOKEN",
+      "key_optional": true,
+      "context_window": null,
+      "models": []
+    },
+    "openai_compatible": {
+      "kind": "local",
+      "api_style": "openai",
+      "base_url": "http://localhost:8000/v1",
+      "api_key_env": "LOOPER_COMPAT_API_KEY",
+      "key_optional": true,
+      "context_window": null,
+      "models": []
+    }
+  },
+  "credentials": {
+    "storage": "env var > OS keyring (optional) > <LOOPER_HOME|~/.config/looper>/credentials.env (mode 0600)",
+    "never_in_config": true,
+    "display": "mask all but last 4 chars"
+  },
+  "assignment_algorithm": [
+    "1. Team = configured agents (1..max_agents). Each agent: kind cli|api|local, provider, model, tier.",
+    "2. Tier: manual 'tier' wins; kind=cli or first-party API (anthropic/openai/xai/google) -> 'frontier'; else effective_params = total (dense) or sqrt(total*active) (MoE) from server metadata or the model name; pick the first tier (by rank, excluding frontier) whose max_params_b > effective_params; unknown size -> defaults.unknown_local_tier.",
+    "3. For each stage: abstract = roles[stage.role].abstract. Capable = members whose tier.roles contains abstract (orchestrator also needs tier.can_orchestrate) and whose own roles list (if any) contains it.",
+    "4. Order capable: roles with tools=true put tool-capable agents (CLIs) first. lead roles: higher tier rank, then strategy preference, then team order. Other roles: strategy preference, then higher rank, then team order.",
+    "5. Diversity: if roles[role].diverse_from names an abstract role and the top candidate produced that role's last output, promote the next capable agent whose rank >= producer rank - 1.",
+    "6. Nobody capable: optional pre/post stage -> skip; mergeable pre/post stage whose previous stage is a single stage in the same segment -> append its prompt to that stage; else assign the highest-rank member and mark under_tier.",
+    "7. Lite mode: if the strongest member's tier rank <= rank('small'), skip all optional pre/post stages.",
+    "8. parallel (Best-of-N): n = min(stage.n, distinct capable, max_best_of_n). One capable agent: if kind is api/local and tier.best_of_n -> n = min(stage.n, single_agent_samples) at temperatures spread 0.2..0.9; else n = 1 and the judge acts as self-critique.",
+    "9. map (Orchestrator->Workers): max_items = min(stage.max_items, max tier.max_map_items of capable workers); <=3 if the orchestrator stage was under_tier; one-member team -> sequential; local workers -> at most max_parallel_local concurrent calls per local server.",
+    "10. Iterations: loop max_iterations x min(tier.iteration_multiplier of body-stage agents), ceil, min 1.",
+    "11. Prompts: whole prompt clipped (head+tail) to min(tier.max_context_chars, context_tokens*chars_per_token*context_fill); tiers with simplify_prompts get a short 'do one thing' prefix; text-only agents on tool roles get a 'propose diffs/commands, do not claim execution' prefix; map sources on tiers with structured_output unreliable|fair are asked for a numbered list.",
+    "12. Team size: hard cap defaults.max_agents (5); warn above defaults.recommended_agents (3)."
+  ],
+  "degradation_order": [
+    "skip optional",
+    "merge into previous single stage",
+    "under_tier on strongest member"
+  ],
+  "stage_flags": {
+    "optional": "may be skipped",
+    "mergeable": "may be folded into the previous stage"
+  }
+}

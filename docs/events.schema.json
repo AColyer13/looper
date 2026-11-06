@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AColyer13/looper/docs/events.schema.json",
+  "title": "looper NDJSON run events",
+  "description": "One object per line on stdout when using `looper run --json-events` or POST /v1/run. api_version 1.",
+  "oneOf": [
+    { "$ref": "#/$defs/run_started" },
+    { "$ref": "#/$defs/routed" },
+    { "$ref": "#/$defs/stage_started" },
+    { "$ref": "#/$defs/stage_output" },
+    { "$ref": "#/$defs/stage_finished" },
+    { "$ref": "#/$defs/degraded" },
+    { "$ref": "#/$defs/warning" },
+    { "$ref": "#/$defs/run_finished" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "agent": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "enum": ["cli", "api", "local"] },
+        "provider": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "tier": { "type": ["string", "null"] },
+        "size": { "type": ["string", "null"] },
+        "tools": { "type": "boolean" }
+      },
+      "required": ["name", "kind"]
+    },
+    "base": {
+      "type": "object",
+      "properties": {
+        "event": { "type": "string" },
+        "meta": { "type": "object", "additionalProperties": true },
+        "role_labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "required": ["event"]
+    },
+    "run_started": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "run_started" },
+            "loop": { "type": "string" },
+            "task": { "type": "string" },
+            "team": { "type": "array", "items": { "$ref": "#/$defs/agent" } },
+            "degradations": { "type": "array", "items": { "type": "string" } },
+            "assign": { "type": ["object", "null"], "additionalProperties": { "type": "string" } }
+          },
+          "required": ["loop", "task"]
+        }
+      ]
+    },
+    "routed": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "routed" },
+            "loop": { "type": "string" },
+            "method": { "type": "string" },
+            "reason": { "type": "string" },
+            "score": { "type": "number" }
+          },
+          "required": ["loop"]
+        }
+      ]
+    },
+    "stage_started": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "stage_started" },
+            "stage": { "type": "string" },
+            "role": { "type": "string" },
+            "abstract_role": { "type": "string" },
+            "agent": { "anyOf": [{ "$ref": "#/$defs/agent" }, { "type": "null" }] },
+            "label": { "type": ["string", "null"] },
+            "iteration": { "type": "integer" },
+            "type": { "enum": ["single", "parallel", "map"] }
+          },
+          "required": ["stage", "role", "iteration"]
+        }
+      ]
+    },
+    "stage_output": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "stage_output" },
+            "stage": { "type": "string" },
+            "text": { "type": "string" },
+            "truncated": { "type": "boolean" },
+            "agent": { "anyOf": [{ "$ref": "#/$defs/agent" }, { "type": "null" }] },
+            "iteration": { "type": "integer" }
+          },
+          "required": ["stage", "text"]
+        }
+      ]
+    },
+    "stage_finished": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "stage_finished" },
+            "stage": { "type": "string" },
+            "status": { "enum": ["ok", "failed"] },
+            "duration": { "type": "number" },
+            "exit_signal": { "type": ["string", "null"] },
+            "error": { "type": ["string", "null"] },
+            "iteration": { "type": "integer" },
+            "agent": { "anyOf": [{ "$ref": "#/$defs/agent" }, { "type": "null" }] }
+          },
+          "required": ["stage", "status", "duration"]
+        }
+      ]
+    },
+    "degraded": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "degraded" },
+            "message": { "type": "string" }
+          },
+          "required": ["message"]
+        }
+      ]
+    },
+    "warning": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "warning" },
+            "message": { "type": "string" }
+          },
+          "required": ["message"]
+        }
+      ]
+    },
+    "run_finished": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "run_finished" },
+            "status": { "enum": ["ok", "failed", "capped", "cancelled"] },
+            "stop_reason": { "type": "string" },
+            "final_output": { "type": "string" },
+            "transcript_path": { "type": ["string", "null"] },
+            "calls_made": { "type": "integer" },
+            "seconds": { "type": "number" },
+            "exit_signal": { "type": ["string", "null"] },
+            "iterations": { "type": "integer" }
+          },
+          "required": ["status"]
+        }
+      ]
+    },
+    "error": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "event": { "const": "error" },
+            "message": { "type": "string" },
+            "status": { "type": "string" }
+          },
+          "required": ["message"]
+        }
+      ]
+    }
+  }
+}
