@@ -1,4 +1,4 @@
-# looper Frontend API (api_version 1, package 0.5.0)
+# looper Frontend API (api_version 1, package 0.5.1)
 
 Stable, versioned machine interface for apps that sit on top of looper
 (e.g. a themed UI). **looper stays persona-agnostic** — frontends may attach
@@ -17,7 +17,7 @@ looper version --json
 ```json
 {
   "name": "looper",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "api_version": 1,
   "capabilities": [
     "version", "doctor", "plan", "run_events", "ask", "ask_stdin",

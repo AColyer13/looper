@@ -27,7 +27,7 @@ looper agents                                  # every configured agent and whet
 cd looper
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-looper --version        # looper 0.5.0
+looper --version        # looper 0.5.1
 pytest                  # all tests use fakes, so no real CLIs are needed
 ```
 
@@ -280,7 +280,7 @@ grading and alternate candidates. Every stage then falls back through `defaults.
 
 ## Configuration
 
-`looper init` writes the full bundled config (identical to [`looper.example.json`](looper.example.json)).
+`looper init` writes the full bundled config (from `src/looper/data/default_config.json`).
 A user config is **merged over the bundled default**, so a small file is enough:
 
 ```json
@@ -404,8 +404,8 @@ The final output is the last stage's output. If the run ended on a non-artifact 
 ```
 
 2. `looper validate`, `looper show security_review`, `looper route "audit for XSS"`, then `looper run ... --dry-run`.
-3. To change the bundled playbook itself, edit `tools/gen_default_config.py` and run it. It regenerates both
-   `src/looper/data/default_config.json` and `looper.example.json`, and a test checks that the two stay identical.
+3. To change the bundled playbook itself, edit `tools/gen_default_config.py` and run it. It regenerates
+   `src/looper/data/default_config.json`. For a local editable copy, run `looper init`.
 
 ## Agent CLI notes
 
