@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from looper.executor import Budget, CapExceeded, Executor, parse_items, render
+from looper.executor import Budget, CapExceeded, Executor
+from looper.textutil import parse_items, render
 from looper.policy import build_policy
 from looper.router import route
 from looper.runners import CallResult, build_argv

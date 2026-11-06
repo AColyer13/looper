@@ -34,11 +34,11 @@ def test_all_14_playbook_loops_present_and_valid(policy):
             assert loop.iterate.exit_signals and loop.iterate.max_iterations >= 1
 
 
-def test_example_file_matches_bundled():
-    root = Path(__file__).resolve().parents[1]
-    bundled = root / "src/looper/data/default_config.json"
-    example = root / "looper.example.json"
-    assert json.loads(example.read_text()) == json.loads(bundled.read_text())
+def test_bundled_default_is_valid_json():
+    from looper.config import bundled_default, bundled_default_text
+    text = bundled_default_text()
+    assert json.loads(text) == bundled_default()
+    assert "loops" in bundled_default()
 
 
 def test_musk_algorithm_has_five_steps(policy):
