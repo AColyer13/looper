@@ -401,10 +401,11 @@ def test_ask_cli_json_block_with_fake_cli(tmp_path):
 def test_version_lists_tool_capabilities():
     r = runner.invoke(app, ["version", "--json"])
     data = json.loads(r.output)
-    assert data["version"] == "0.5.2"
+    assert data["version"] == "0.6.0"
     assert data["api_version"] == 1
     assert "tool_calls" in data["capabilities"]
     assert "tool_results" in data["capabilities"]
+    assert "history_trim" in data["capabilities"]
     assert "ask_tools" in data["capabilities"]
 
 
