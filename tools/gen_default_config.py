@@ -1,7 +1,7 @@
-"""Regenerate src/looper/data/default_config.json and looper.example.json.
+"""Regenerate src/looper/data/default_config.json.
 
-The JSON files are the source of truth at runtime; this script just keeps the
-big playbook readable as Python and both copies in sync.
+That JSON file is the source of truth at runtime; this script keeps the
+big playbook readable as Python. For a local copy, run ``looper init``.
 """
 import json
 from pathlib import Path
@@ -543,6 +543,6 @@ for loop in ("research_plan_implement", "spec_driven", "pdca"):
 
 if __name__ == "__main__":
     text = json.dumps(CONFIG, indent=2, ensure_ascii=False) + "\n"
-    for p in (ROOT / "src/looper/data/default_config.json", ROOT / "looper.example.json"):
-        p.write_text(text, encoding="utf-8")
-        print("wrote", p)
+    p = ROOT / "src/looper/data/default_config.json"
+    p.write_text(text, encoding="utf-8")
+    print("wrote", p)

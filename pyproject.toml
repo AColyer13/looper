@@ -30,7 +30,7 @@ path = "src/looper/__init__.py"
 packages = ["src/looper"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/looper", "tests", "tools", "docs", "README.md", "looper.example.json", "pyproject.toml"]
+include = ["src/looper", "tests", "tools", "docs", "README.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
