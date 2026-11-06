@@ -191,3 +191,43 @@ def test_unavailable_api_member_is_reported(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-000000000000")
     ex = Executor(pol, runner=FakeRunner())
     assert ex.plan("x", "react")["stages"][0]["agent"] == "claude-sonnet-5-5"
+
+
+def test_context_budget_raises_with_declared_256k_window():
+    """Declared context_window raises clip budget above the tier max_context_chars floor."""
+    from looper.assign import build_members, context_budget
+    from dataclasses import replace
+
+    pol = team_policy(["ollama:qwen3.5:9b"])  # ~medium by size
+    name = pol.team[0]
+    # Force medium tier + a 256k declared window (as a large local would advertise)
+    a = replace(pol.agents[name], tier="medium", context_window=262_144, num_ctx=262_144, params_b=9.0)
+    pol.agents[name] = a
+    members = build_members(pol, {name: a.base_url or "http://localhost:11434"})
+    assert len(members) == 1
+    m = members[0]
+    assert m.tier.name == "medium"
+    tier_cap = m.tier.max_context_chars
+    per_var, whole = context_budget(m, pol)
+    expected = int(262_144 * pol.defaults.chars_per_token * pol.defaults.context_fill)
+    assert pol.defaults.context_fill == 0.75
+    assert expected == int(262_144 * 3.5 * 0.75)
+    assert whole == expected
+    assert whole > tier_cap
+    assert per_var == whole
+
+
+def test_context_budget_uses_tier_when_no_window_declared():
+    from looper.assign import build_members, context_budget
+    from dataclasses import replace
+
+    pol = team_policy(["cli:claude"])
+    name = pol.team[0]
+    # CLI frontier with no context_window → tier ceiling
+    a = replace(pol.agents[name], context_window=None, num_ctx=None)
+    pol.agents[name] = a
+    members = build_members(pol, {name: "/usr/bin/claude"})
+    m = members[0]
+    per_var, whole = context_budget(m, pol)
+    assert whole == m.tier.max_context_chars
+    assert per_var == min(pol.defaults.max_context_chars, whole)

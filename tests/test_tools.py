@@ -64,7 +64,7 @@ def test_parse_json_block_valid_and_strips_text():
         '{"tool":"run_command","command":"npm test"}]}\n'
         "```\n"
     )
-    clean, calls, warnings = toolmod.parse_json_block(text, _specs())
+    clean, calls, warnings, finish = toolmod.parse_json_block(text, _specs())
     assert "Here's the change" in clean
     assert "looper-tools" not in clean
     assert len(calls) == 2
@@ -76,18 +76,18 @@ def test_parse_json_block_valid_and_strips_text():
 
 def test_parse_json_block_malformed_unknown_trailing_comma():
     specs = _specs()
-    clean, calls, w = toolmod.parse_json_block(
+    clean, calls, w, finish = toolmod.parse_json_block(
         'say hi\n```looper-tools\n{not json}\n```', specs
     )
     assert calls == [] and any("malformed" in x for x in w)
 
-    clean, calls, w = toolmod.parse_json_block(
+    clean, calls, w, finish = toolmod.parse_json_block(
         '```looper-tools\n{"tool_calls":[{"tool":"nope","x":1}]}\n```', specs
     )
     assert calls == [] and any("unknown tool" in x for x in w)
 
     # trailing comma tolerated
-    clean, calls, w = toolmod.parse_json_block(
+    clean, calls, w, finish = toolmod.parse_json_block(
         '```looper-tools\n{"tool_calls":[{"tool":"run_command","command":"ls",},]}\n```',
         specs,
     )
@@ -102,7 +102,7 @@ def test_validate_missing_required_args():
 
 
 def test_plain_text_fallback_no_block():
-    clean, calls, w = toolmod.parse_json_block("just a reply", _specs())
+    clean, calls, w, finish = toolmod.parse_json_block("just a reply", _specs())
     assert clean == "just a reply" and calls == [] and w == []
 
 
@@ -401,7 +401,7 @@ def test_ask_cli_json_block_with_fake_cli(tmp_path):
 def test_version_lists_tool_capabilities():
     r = runner.invoke(app, ["version", "--json"])
     data = json.loads(r.output)
-    assert data["version"] == "0.5.1"
+    assert data["version"] == "0.5.2"
     assert data["api_version"] == 1
     assert "tool_calls" in data["capabilities"]
     assert "tool_results" in data["capabilities"]
@@ -530,3 +530,63 @@ def test_build_request_tool_results_anthropic_roundtrip():
         and any(c.get("type") == "tool_result" for c in m["content"])
         for m in body["messages"]
     )
+
+
+# --------------------------------------------------------------------------- invalid_tool_calls finish_reason
+
+
+def test_openai_chat_finish_invalid_when_all_calls_rejected():
+    """Provider said tool_calls but every call failed validation → invalid_tool_calls."""
+    tools = toolmod.parse_tools([{
+        "name": "Bash", "description": "x",
+        "parameters": {"type": "object",
+                      "properties": {"command": {"type": "string"}},
+                      "required": ["command"]},
+    }])
+    raw = {"choices": [{"message": {
+        "content": "I'll run it",
+        "tool_calls": [{"id": "a", "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"}}]
+    }, "finish_reason": "tool_calls"}]}
+    text, calls, finish, warnings = toolmod.extract_native_openai_chat(raw, tools, max_calls=None)
+    assert text == "I'll run it"
+    assert calls == []
+    assert finish == "invalid_tool_calls"
+    assert any("missing required" in w for w in warnings)
+
+
+def test_ollama_finish_invalid_when_all_calls_rejected():
+    tools = toolmod.parse_tools([{
+        "name": "Bash", "description": "x",
+        "parameters": {"type": "object",
+                      "properties": {"command": {"type": "string"}},
+                      "required": ["command"]},
+    }])
+    raw = {"message": {"content": "", "tool_calls": [
+        {"function": {"name": "Bash", "arguments": {}}}
+    ]}}
+    text, calls, finish, warnings = toolmod.extract_native_ollama(raw, tools, max_calls=None)
+    assert calls == [] and finish == "invalid_tool_calls"
+
+
+def test_anthropic_finish_invalid_when_all_calls_rejected():
+    tools = toolmod.parse_tools([{
+        "name": "Bash", "description": "x",
+        "parameters": {"type": "object",
+                      "properties": {"command": {"type": "string"}},
+                      "required": ["command"]},
+    }])
+    raw = {"content": [
+        {"type": "text", "text": "x"},
+        {"type": "tool_use", "id": "1", "name": "Bash", "input": {}},
+    ], "stop_reason": "tool_use"}
+    text, calls, finish, warnings = toolmod.extract_native_anthropic(raw, tools, max_calls=None)
+    assert calls == [] and finish == "invalid_tool_calls"
+
+
+def test_json_block_finish_invalid_when_all_calls_rejected():
+    tools = _specs()
+    text = 'nope\n\n```looper-tools\n{"tool_calls":[{"tool":"write_file","path":"a"}]}\n```'
+    clean, calls, w, finish = toolmod.parse_json_block(text, tools)
+    assert calls == [] and finish == "invalid_tool_calls"
+    assert any("missing required" in x for x in w)
