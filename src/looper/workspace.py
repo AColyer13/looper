@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from looper.config import ConfigError, state_dir
-from looper.mcp_config import McpSettings, RolePolicy, ToolLists, load_mcp_settings
+from looper.mcp_config import McpSettings, RolePolicy, ToolLists, load_mcp_settings, validate_entries
 
 _MEMORY_CHAR_CAP = 8000
 _FM_START = re.compile(r"^---\s*$")
@@ -237,19 +237,24 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
-def _role_policy(meta: dict[str, Any]) -> RolePolicy:
+def _role_policy(meta: dict[str, Any], where: str) -> RolePolicy:
     mode = meta.get("mcp_mode") or meta.get("mode")
     if mode is not None and mode not in ("auto_read_only", "approve_all", "deny_all"):
         mode = None
-    return RolePolicy(
-        mode=str(mode) if mode else None,
-        lists=ToolLists(
-            deny=_string_list(meta.get("deny")),
-            require_approval=_string_list(meta.get("require_approval")),
-            allow=_string_list(meta.get("allow")),
-            auto_approve=_string_list(meta.get("auto_approve")),
-        ),
+    lists = ToolLists(
+        deny=_string_list(meta.get("deny")),
+        require_approval=_string_list(meta.get("require_approval")),
+        allow=_string_list(meta.get("allow")),
+        auto_approve=_string_list(meta.get("auto_approve")),
     )
+    for label, entries in (
+        ("deny", lists.deny),
+        ("require_approval", lists.require_approval),
+        ("allow", lists.allow),
+        ("auto_approve", lists.auto_approve),
+    ):
+        validate_entries(entries, f"{where}: {label}")
+    return RolePolicy(mode=str(mode) if mode else None, lists=lists)
 
 
 def find_project_root(start: Path | None = None, project: str | Path | None = None) -> Path | None:
@@ -334,7 +339,7 @@ def _load_roles(project_dir: Path | None) -> dict[str, RoleDoc]:
             path=path,
             model=str(model) if isinstance(model, str) and model.strip() else None,
             max_tool_calls=max_calls if isinstance(max_calls, int) else None,
-            policy=_role_policy(meta),
+            policy=_role_policy(meta, str(path)),
         )
     return out
 

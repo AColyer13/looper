@@ -27,7 +27,7 @@ looper agents                                  # every configured agent and whet
 cd looper
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-looper --version        # looper 0.7.0
+looper --version        # looper 0.7.1
 pytest                  # all tests use fakes, so no real CLIs are needed
 ```
 
@@ -605,10 +605,51 @@ Write tests first.
 when `ask` is called with `"role": "coder"`. Role lists use the same precedence
 as the global lists (a role deny beats a server auto_approve).
 
+### Match syntax (`mcp_match_v2`)
+
+A plain entry is still an fnmatch glob (`read_*`, `notes:write_note`),
+case-sensitive, checked against the tool name, `server:tool`, `server/tool`,
+and `mcp__server__tool`.
+
+| Entry | Matches |
+|---|---|
+| `verb:send,post` | Leading token only. `sendMessage`, `sendmail`, `post_comment`. Not `search_query` for `query`, not `get_posts` for `post`, not `git_push` for `push`. |
+| `word:push,commit` | Any whole token. `git_push`, `commit_files`. Also `search_query` if the word is `query`. |
+| `re:(?i)^send` | Python regex, searched against those four names. |
+| `notes:verb:write` | Same, but only the `notes` server. |
+
+Tokens split on `_`, `-`, `.`, `/`, `:`, and camelCase humps (`CreateIssue` →
+create, issue). `verb:` also treats a glued leading word as a match when the
+verb is at least four letters (`sendmail` matches `verb:send`; `settings` does
+not match `verb:set`). Put each entry on its own YAML line. `[verb:drop,deploy]`
+is split on the comma by YAML and is not one pattern.
+
+One line per verb group:
+
+```markdown
+---
+deny:
+  - verb:delete,remove,drop,purge,truncate,destroy,trash,archive,clear,reset,revoke,unlink,close,cancel
+  - verb:pay,charge,refund,transfer,purchase,grant,assign,approve,invite
+  - verb:deploy
+  - verb:create,add,insert,new,post,put,upload,save,set,append
+  - verb:write,edit,update,modify,patch,rename,move,replace,upsert,merge,commit,push,apply,sync
+  - verb:send,reply,forward,publish,share,comment,react,notify,email,message,tweet
+  - verb:run,exec,execute,shell,eval,query,trigger,start,stop,restart,kill,install
+  - word:push,commit
+---
+```
+
+`verb:push` does not see `git_push` (the leading token is `git`). The extra
+`word:push,commit` line does. Keep `query` on a `verb:` line so `search_query`
+stays a read. A bad `re:` entry is a `ConfigError` that names the file;
+`looper doctor --json` puts that text in `problems`. `looper version --json`
+includes the capability `mcp_match_v2`.
+
 `doctor --json` adds `workspace`, `skills`, and `mcp` (reachability and tool
 names; secret values are not included). `version --json` advertises
-`workspace`, `skills`, `mcp`, and `mcp_approval`. The approval resume shape is
-in [`docs/FRONTEND_API.md`](docs/FRONTEND_API.md).
+`workspace`, `skills`, `mcp`, `mcp_approval`, and `mcp_match_v2`. The approval
+resume shape is in [`docs/FRONTEND_API.md`](docs/FRONTEND_API.md).
 
 
 ## Tool calls (caller-owned)

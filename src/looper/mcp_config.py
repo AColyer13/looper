@@ -26,6 +26,24 @@ server, or config sets another):
 
 An explicit allow/auto_approve still runs under ``deny_all``. An explicit deny
 still refuses under ``approve_all``. ``require_approval`` beats allow.
+
+List entries (deny, require_approval, allow, auto_approve, include, exclude),
+including role frontmatter, accept three forms. Anything else is an fnmatch
+glob, matched with ``fnmatchcase`` against the bare tool name, ``server:tool``,
+``server/tool``, and ``mcp__server__tool``.
+
+* ``re:<regex>`` — Python regex, ``re.search`` over those same four candidates.
+  Add ``(?i)`` for case-insensitivity. Optional server scope: ``notes:re:^write``.
+* ``word:<a>,<b>`` — case-insensitive whole token. The bare tool name is split
+  on ``_ - . / :`` and on camelCase humps. ``word:push`` matches ``git_push``.
+  ``word:query`` also matches ``search_query``.
+* ``verb:<a>,<b>`` — same tokens, but only the leading one (MCP names are
+  usually verb-first). ``verb:query`` does not match ``search_query``. A glued
+  leading token such as ``sendmail`` matches ``verb:send`` when the verb is at
+  least four letters. ``verb:set`` does not match ``settings``.
+
+Put each ``verb:`` / ``word:`` / ``re:`` value on its own line. A YAML flow
+list splits on commas, so ``[verb:drop,deploy]`` is not one entry.
 """
 
 from __future__ import annotations
@@ -34,6 +52,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -163,10 +182,10 @@ def _as_str_list(value: Any, where: str) -> list[str]:
 
 def _lists_from(data: dict[str, Any], where: str) -> ToolLists:
     return ToolLists(
-        deny=_as_str_list(data.get("deny"), f"{where}.deny"),
-        require_approval=_as_str_list(data.get("require_approval"), f"{where}.require_approval"),
-        allow=_as_str_list(data.get("allow"), f"{where}.allow"),
-        auto_approve=_as_str_list(data.get("auto_approve"), f"{where}.auto_approve"),
+        deny=_policy_list(data.get("deny"), f"{where}.deny"),
+        require_approval=_policy_list(data.get("require_approval"), f"{where}.require_approval"),
+        allow=_policy_list(data.get("allow"), f"{where}.allow"),
+        auto_approve=_policy_list(data.get("auto_approve"), f"{where}.auto_approve"),
     )
 
 
@@ -240,8 +259,8 @@ def parse_server(name: str, raw: Any, source: str) -> ServerSpec:
             return spec
         return ServerSpec(
             name=name, transport="stdio", source=source, command=command, args=args, env=env,
-            include=_as_str_list(raw.get("include"), f"{where}.include"),
-            exclude=_as_str_list(raw.get("exclude"), f"{where}.exclude"),
+            include=_policy_list(raw.get("include"), f"{where}.include"),
+            exclude=_policy_list(raw.get("exclude"), f"{where}.exclude"),
             lists=_lists_from(raw, where),
             mode=_mode(raw.get("mode"), f"{where}.mode"),
             secrets=secrets,
@@ -255,8 +274,8 @@ def parse_server(name: str, raw: Any, source: str) -> ServerSpec:
         return ServerSpec(name=name, transport=transport, source=source, error=str(exc), secrets=secrets)
     return ServerSpec(
         name=name, transport=transport, source=source, url=url, headers=headers,
-        include=_as_str_list(raw.get("include"), f"{where}.include"),
-        exclude=_as_str_list(raw.get("exclude"), f"{where}.exclude"),
+        include=_policy_list(raw.get("include"), f"{where}.include"),
+        exclude=_policy_list(raw.get("exclude"), f"{where}.exclude"),
         lists=_lists_from(raw, where),
         mode=_mode(raw.get("mode"), f"{where}.mode"),
         secrets=secrets,
@@ -327,14 +346,153 @@ def load_mcp_settings(
     return settings
 
 
+# re:/word:/verb: plus an optional server scope. Plain globs never match this.
+_ENTRY = re.compile(
+    r"^(?:(?P<server>[A-Za-z0-9][A-Za-z0-9_-]*):)?(?P<kind>re|word|verb):(?P<body>.*)$",
+    re.DOTALL,
+)
+_MAX_REGEX_LEN = 256
+_HUMPS = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+_SEPS = re.compile(r"[_\-./:]+")
+_WORD_SPLIT = re.compile(r"[\s,]+")
+# (group that already has a quantifier) followed by another quantifier, or ** / ++.
+_NESTED_QUANT = re.compile(r"\([^()]*[+*][^()]*\)[+*{]|[+*][+*{]")
+
+
+def _policy_list(value: Any, where: str) -> list[str]:
+    items = _as_str_list(value, where)
+    validate_entries(items, where)
+    return items
+
+
+def _parse_entry(entry: str) -> tuple[str, str | None, str] | None:
+    """Return ``(kind, server_or_none, body)`` for re/word/verb, else None (glob)."""
+    match = _ENTRY.match(entry)
+    if match is None:
+        return None
+    server = match.group("server")
+    return match.group("kind"), server, match.group("body")
+
+
+@lru_cache(maxsize=512)
+def _compile_regex(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
+
+
+@lru_cache(maxsize=512)
+def _words(body: str) -> frozenset[str]:
+    return frozenset(part.casefold() for part in _WORD_SPLIT.split(body.strip()) if part)
+
+
+@lru_cache(maxsize=2048)
+def tool_tokens(name: str) -> tuple[str, ...]:
+    """Split a tool name into case-folded tokens.
+
+    Separators are ``_``, ``-``, ``.``, ``/``, and ``:``. camelCase and
+    PascalCase humps are their own tokens (``sendMessage`` → send, message).
+    A glued word such as ``sendmail`` stays one token.
+    """
+    out: list[str] = []
+    for part in _SEPS.split(name):
+        if not part:
+            continue
+        humps = _HUMPS.findall(part)
+        out.extend(humps or [part])
+    return tuple(token.casefold() for token in out)
+
+
+def _pathological(pattern: str) -> str | None:
+    if len(pattern) > _MAX_REGEX_LEN:
+        return f"longer than {_MAX_REGEX_LEN} characters"
+    if _NESTED_QUANT.search(pattern):
+        return "nested quantifiers"
+    quantifiers = pattern.count("*") + pattern.count("+") + pattern.count("{")
+    if quantifiers > 12:
+        return "too many quantifiers"
+    return None
+
+
+def validate_entry(entry: str, where: str) -> None:
+    """Reject a bad ``re:`` / empty ``word:`` / empty ``verb:`` before a turn runs."""
+    parsed = _parse_entry(entry)
+    if parsed is None:
+        return
+    kind, _server, body = parsed
+    if kind == "re":
+        pattern = body
+        if not pattern.strip():
+            raise ConfigError(f"{where}: regex entry {entry!r} is empty")
+        why = _pathological(pattern)
+        if why:
+            raise ConfigError(f"{where}: regex entry {entry!r} was rejected ({why})")
+        try:
+            _compile_regex(pattern)
+        except re.error as exc:
+            raise ConfigError(f"{where}: invalid regex in entry {entry!r}: {exc}") from exc
+        return
+    if not _words(body):
+        raise ConfigError(f"{where}: {kind}: entry {entry!r} needs at least one word")
+
+
+def validate_entries(entries: list[str], where: str) -> None:
+    for entry in entries:
+        validate_entry(entry, where)
+
+
+def _leading_matches(leading: str, words: frozenset[str]) -> bool:
+    if leading in words:
+        return True
+    # Glued names (sendmail) for verbs of 4+ letters. Short verbs stay exact
+    # so verb:set does not match settings.
+    for word in words:
+        if len(word) < 4 or len(leading) <= len(word):
+            continue
+        rest = leading[len(word):]
+        if leading.startswith(word) and rest.isalpha() and rest.islower():
+            return True
+    return False
+
+
+def _candidates(server: str, tool: str) -> tuple[str, str, str, str]:
+    return (tool, f"{server}:{tool}", f"{server}/{tool}", expose_tool(server, tool))
+
+
+def entry_matches(entry: str, server: str, tool: str) -> bool:
+    """Whether one policy entry matches ``tool`` on ``server``."""
+    return _match((entry,), server, tool)
+
+
 def _match(patterns: list[str], server: str, tool: str) -> bool:
     if not patterns:
         return False
-    candidates = (tool, f"{server}:{tool}", f"{server}/{tool}", expose_tool(server, tool))
+    candidates = _candidates(server, tool)
+    tokens = tool_tokens(tool)
+    leading = tokens[0] if tokens else ""
     for pat in patterns:
-        for cand in candidates:
-            if fnmatchcase(cand, pat):
+        parsed = _parse_entry(pat)
+        if parsed is None:
+            for cand in candidates:
+                if fnmatchcase(cand, pat):
+                    return True
+            continue
+        kind, scope, body = parsed
+        if scope is not None and scope != server:
+            continue
+        if kind == "re":
+            try:
+                compiled = _compile_regex(body)
+            except re.error as exc:
+                raise ConfigError(f"invalid regex in entry {pat!r}: {exc}") from exc
+            for cand in candidates:
+                if compiled.search(cand):
+                    return True
+            continue
+        words = _words(body)
+        if kind == "word":
+            if any(token in words for token in tokens):
                 return True
+        elif _leading_matches(leading, words):
+            return True
     return False
 
 

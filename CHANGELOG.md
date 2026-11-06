@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- **Policy matchers.** Deny / require_approval / allow / auto_approve / include / exclude entries, including role frontmatter, still use `fnmatchcase` globs. Three prefixes are added: `re:<regex>` (Python `re.search` against the bare tool name, `server:tool`, `server/tool`, and `mcp__server__tool`), `word:<a>,<b>` (any whole token, case-insensitive), and `verb:<a>,<b>` (leading token only, so `verb:query` does not match `search_query`). Optional server scope: `notes:verb:write`. A glued leading name such as `sendmail` matches `verb:send` when the verb is at least four letters. Invalid or nested regexes raise `ConfigError` naming the file and the entry; `doctor --json` reports that error. Capability `mcp_match_v2`. `api_version` stays **1**.
+
 ## 0.7.0
 
 - **Workspace.** `~/.looper/` (or `$LOOPER_STATE_HOME`) holds machine skills and optional `looper.json`. `<project>/.looper/` holds `AGENTS.md`, optional `SOUL.md` / `USER.md` / `MEMORY.md` / `memory/`, `roles/<role>.md`, and project skills. The project root is the nearest ancestor of the working directory that contains `.looper/`, or `--project` / request field `project`. `~/.looper/looper.json` is preferred over `~/.config/looper/looper.json` when it exists. Credentials stay in `~/.config/looper/credentials.env` (or the keyring). With no `.looper/` directory and no MCP config, prompts and tool behaviour are unchanged.
