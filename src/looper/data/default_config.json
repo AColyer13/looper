@@ -402,7 +402,7 @@
   },
   "agents": {
     "claude": {
-      "description": "Claude Code (Anthropic)",
+      "description": "Claude Code (Anthropic). When caller tools are offered, looper adds plan-mode permission flags and disallows Edit/Write/NotebookEdit (best effort).",
       "binary": "claude",
       "command": [
         "{binary}",
@@ -411,10 +411,16 @@
       ],
       "version_args": [
         "--version"
+      ],
+      "caller_tools_extra_args": [
+        "--permission-mode",
+        "plan",
+        "--disallowedTools",
+        "Edit,Write,NotebookEdit"
       ]
     },
     "codex": {
-      "description": "Codex CLI (OpenAI)",
+      "description": "Codex CLI (OpenAI). When caller tools are offered, looper adds read-only sandbox flags (best effort).",
       "binary": "codex",
       "command": [
         "{binary}",
@@ -424,6 +430,12 @@
       ],
       "version_args": [
         "--version"
+      ],
+      "caller_tools_extra_args": [
+        "--sandbox",
+        "read-only",
+        "--ask-for-approval",
+        "never"
       ]
     },
     "grok": {
@@ -1593,7 +1605,7 @@
       }
     },
     "editor_slop_grader": {
-      "description": "Editor / AI-slop grader: grade text for AI slop (filler, hedging, clichés, em-dash spam, generic phrasing), then edit and re-grade until clean.",
+      "description": "Editor / AI-slop grader: grade text for AI slop (filler, hedging, clich\u00e9s, em-dash spam, generic phrasing), then edit and re-grade until clean.",
       "priority": 6,
       "route": [
         {
@@ -1653,7 +1665,7 @@
         {
           "name": "grade",
           "role": "grader",
-          "prompt": "TASK:\n{{task}}\n\nGrade the text for AI slop on a 0-10 scale (0 = no slop). Flag filler, hedging, clichés, 'delve'-style vocabulary, empty superlatives, list bloat, and em-dash overuse, quoting each instance. End with 'SLOP SCORE: <n>'."
+          "prompt": "TASK:\n{{task}}\n\nGrade the text for AI slop on a 0-10 scale (0 = no slop). Flag filler, hedging, clich\u00e9s, 'delve'-style vocabulary, empty superlatives, list bloat, and em-dash overuse, quoting each instance. End with 'SLOP SCORE: <n>'."
         },
         {
           "name": "edit",
