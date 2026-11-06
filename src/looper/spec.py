@@ -31,8 +31,9 @@ ALGORITHM = [
     "<=3 if the orchestrator stage was under_tier; one-member team -> sequential; local workers -> at most "
     "max_parallel_local concurrent calls per local server.",
     "10. Iterations: loop max_iterations x min(tier.iteration_multiplier of body-stage agents), ceil, min 1.",
-    "11. Prompts: whole prompt clipped (head+tail) to min(tier.max_context_chars, context_tokens*chars_per_token*"
-    "context_fill); tiers with simplify_prompts get a short 'do one thing' prefix; text-only agents on tool roles "
+    "11. Prompts: whole prompt clipped (head+tail) to int(context_tokens*chars_per_token*context_fill) when the agent "
+    "declares a window (context_window/num_ctx/context_tokens; may exceed tier.max_context_chars), else "
+    "tier.max_context_chars; tiers with simplify_prompts get a short 'do one thing' prefix; text-only agents on tool roles "
     "get a 'propose diffs/commands, do not claim execution' prefix; map sources on tiers with structured_output "
     "unreliable|fair are asked for a numbered list.",
     "12. Team size: hard cap defaults.max_agents (5); warn above defaults.recommended_agents (3).",

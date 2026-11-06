@@ -180,7 +180,7 @@ class Defaults:
     max_best_of_n: int = 5
     single_agent_samples: int = 2
     chars_per_token: float = 3.5
-    context_fill: float = 0.5
+    context_fill: float = 0.75
     unknown_local_tier: str = "medium"
 
 
@@ -286,7 +286,7 @@ def build_policy(raw: dict[str, Any], *, source: str = "dict", path: Path | None
         max_best_of_n=max(1, int(d.get("max_best_of_n", 5))),
         single_agent_samples=max(1, int(d.get("single_agent_samples", 2))),
         chars_per_token=float(d.get("chars_per_token", 3.5)),
-        context_fill=float(d.get("context_fill", 0.5)),
+        context_fill=float(d.get("context_fill", 0.75)),
         unknown_local_tier=str(d.get("unknown_local_tier", "medium")),
     )
     if not 1 <= defaults.max_agents <= HARD_MAX_AGENTS:

@@ -37,7 +37,7 @@ class CallResult:
     seconds: float = 0.0
     # Tool-calling (ask path). Empty tool_calls + finish_reason "stop" = plain text.
     tool_calls: list = None  # type: ignore[assignment]
-    finish_reason: str = "stop"  # stop | tool_calls | length | error
+    finish_reason: str = "stop"  # stop | tool_calls | invalid_tool_calls | length | error
     protocol: str = "none"  # native | json_block | none
     warnings: list = None  # type: ignore[assignment]
     usage: dict | None = None
