@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, TextIO
 
 
-API_VERSION = 1
+from looper import API_VERSION
 
 PUBLIC_EVENTS = (
     "run_started",
@@ -108,10 +108,6 @@ class EventEmitter:
                 self.stream.flush()
             if self.on_event:
                 self.on_event(kind, payload)
-
-    def label_for(self, role: str) -> str | None:
-        return self.role_labels.get(role) or self.role_labels.get(role.replace("-", "_"))
-
 
 def install_signal_handlers(token: CancelToken) -> Callable[[], None]:
     """On SIGINT/SIGTERM, cancel the token. Returns a restore function."""

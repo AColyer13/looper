@@ -124,6 +124,16 @@ def prepare_cli_call(agent: AgentSpec, binary_path: str, prompt: str) -> tuple[l
     return _fill_command(agent, binary_path, prompt=prompt), False
 
 
+
+def insert_extra_argv(argv: list[str], extra: list[str] | None, *, prompt: str, use_stdin: bool) -> list[str]:
+    """Insert caller extra flags before a trailing prompt argv element when present."""
+    if not extra:
+        return argv
+    if not use_stdin and argv and argv[-1] == prompt:
+        return [*argv[:-1], *list(extra), argv[-1]]
+    return [*argv, *list(extra)]
+
+
 class Runner(Protocol):
     def __call__(self, inv: Invocation) -> CallResult: ...
 
@@ -140,15 +150,11 @@ class SubprocessRunner:
     def __call__(self, inv: Invocation) -> CallResult:
         try:
             if inv.use_stdin is not None and inv.argv:
+                # Pre-built argv (e.g. from prepare_invocation) already includes extras.
                 argv, use_stdin = list(inv.argv), bool(inv.use_stdin)
             else:
                 argv, use_stdin = prepare_cli_call(inv.agent, inv.binary_path, inv.prompt)
-            if inv.extra_argv:
-                # Insert extras before a trailing prompt arg when present.
-                if not use_stdin and argv and argv[-1] == inv.prompt:
-                    argv = [*argv[:-1], *list(inv.extra_argv), argv[-1]]
-                else:
-                    argv = [*argv, *list(inv.extra_argv)]
+                argv = insert_extra_argv(argv, inv.extra_argv, prompt=inv.prompt, use_stdin=use_stdin)
         except PromptTooLongError as exc:
             return CallResult(inv.agent.name, list(inv.argv) if inv.argv else [], False, "",
                               error=str(exc), seconds=0.0)
@@ -230,11 +236,7 @@ def prepare_invocation(
     extra = list(http_kw.pop("extra_argv", None) or [])
     if agent.kind == "cli":
         argv, use_stdin = prepare_cli_call(agent, binary_path, prompt)
-        if extra:
-            if not use_stdin and argv and argv[-1] == prompt:
-                argv = [*argv[:-1], *extra, argv[-1]]
-            else:
-                argv = [*argv, *extra]
+        argv = insert_extra_argv(argv, extra, prompt=prompt, use_stdin=use_stdin)
         return Invocation(
             agent, binary_path, prompt, timeout, cwd, argv, use_stdin=use_stdin,
             extra_argv=extra, **http_kw,
