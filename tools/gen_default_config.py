@@ -532,6 +532,17 @@ CONFIG = {
         "grader": ["agy", "claude"],
     },
     "router": {"default_loop": "react", "min_score": 2},
+    "history_trim": {
+        "enabled": False,
+        "budget_fill": 0.5,
+        "write_recent_turns": 20,
+        "result_keep_recent_turns": 8,
+        "head_lines": 40,
+        "tail_lines": 40,
+        "max_tool_result_lines": 100,
+        "keep_error_lines": True,
+        "keep_recent_turns": 20,
+    },
     "loops": LOOPS,
 }
 
