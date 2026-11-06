@@ -34,7 +34,7 @@ from looper.router import route as route_prompt
 _VALUE_OPTS = {
     "--loop", "-l", "--config", "-c", "--max-iterations", "-n", "--agent", "-a", "--cwd",
     "--meta", "--meta-json", "--role-labels-json", "--assign-json", "--team-json", "--team-file",
-    "--host", "--port", "--token", "--prompt-file", "--timeout",
+    "--host", "--port", "--token", "--prompt-file", "--timeout", "--request-json", "--tools-json",
 }
 
 _RUN_ONLY_FLAGS = {"--dry-run", "--json", "--json-events", "--no-transcript", "--quiet", "-q", "--stdin"}
@@ -264,13 +264,66 @@ def ask_cmd(
     timeout: Optional[float] = typer.Option(None, "--timeout"),
     use_stdin: bool = typer.Option(False, "--stdin", help="Read the prompt from stdin (avoids OS argv limits)."),
     prompt_file: Optional[Path] = typer.Option(None, "--prompt-file", help="Read the prompt from a file."),
+    request_json: Optional[str] = typer.Option(
+        None, "--request-json",
+        help="Full ask request as JSON (or '-' for stdin). Supports tools/messages/tool_results. "
+             "When set, prompt argv/--stdin/--prompt-file are optional."),
+    tools_json: Optional[str] = typer.Option(
+        None, "--tools-json", help="Tools array JSON (merged into the request)."),
 ) -> None:
-    """Send one prompt to one team agent (CLI / API / local). For chat-like character turns."""
-    prompt = _resolve_prompt(prompt, use_stdin=use_stdin, prompt_file=prompt_file,
-                             empty_msg="Empty prompt.", missing_msg="No prompt given.")
+    """Send one prompt to one team agent (CLI / API / local). For chat-like character turns.
+
+    With ``--request-json`` / tools, the response may include structured ``tool_calls``
+    for the caller to execute (looper never runs them). See docs/FRONTEND_API.md.
+    """
+    req: dict = {}
+    if request_json is not None:
+        raw = request_json
+        if raw == "-":
+            if sys.stdin.isatty():
+                err.print("[red]--request-json - requires piped stdin.[/red]")
+                raise typer.Exit(2)
+            raw = sys.stdin.read()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            err.print(f"[red]--request-json: invalid JSON ({exc})[/red]")
+            raise typer.Exit(2)
+        if not isinstance(parsed, dict):
+            err.print("[red]--request-json must be a JSON object[/red]")
+            raise typer.Exit(2)
+        req = parsed
+        if req.get("agent") and agent and req.get("agent") != agent:
+            err.print("[red]--agent conflicts with request.agent[/red]")
+            raise typer.Exit(2)
+        if not agent and req.get("agent"):
+            agent = str(req["agent"])
+    if tools_json:
+        try:
+            tools = json.loads(tools_json)
+        except json.JSONDecodeError as exc:
+            err.print(f"[red]--tools-json: invalid JSON ({exc})[/red]")
+            raise typer.Exit(2)
+        req["tools"] = tools
+
+    # Resolve prompt unless the request already carries prompt/messages/tool_results
+    has_conversation = bool(req.get("prompt") or req.get("messages") or req.get("tool_results"))
+    if prompt is not None or use_stdin or prompt_file is not None:
+        if has_conversation and request_json is not None and prompt is None and not use_stdin and prompt_file is None:
+            pass
+        else:
+            resolved = _resolve_prompt(
+                prompt, use_stdin=use_stdin, prompt_file=prompt_file,
+                empty_msg="Empty prompt.", missing_msg="No prompt given.",
+            )
+            req["prompt"] = resolved
+    elif not has_conversation:
+        err.print("[red]No prompt given.[/red] Pass a prompt, --stdin, --prompt-file, or --request-json with prompt/messages.")
+        raise typer.Exit(2)
+
     try:
         pol = _policy(config, team_json=team_json, team_file=team_file)
-        result = frontend_api.ask(pol, agent, prompt, cwd=cwd, timeout=timeout)
+        result = frontend_api.ask(pol, agent, request=req, cwd=cwd, timeout=timeout)
     except (ConfigError, ValueError) as exc:
         err.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2)
@@ -279,6 +332,9 @@ def ask_cmd(
     else:
         if result["ok"]:
             out.print(result["text"], markup=False, highlight=False, soft_wrap=True)
+            if result.get("tool_calls"):
+                err.print(f"[dim]tool_calls: {len(result['tool_calls'])} "
+                          f"(finish_reason={result.get('finish_reason')}) — use --json to see them[/dim]")
         else:
             err.print(f"[red]{escape(result.get('error') or 'failed')}[/red]")
             raise typer.Exit(1)
