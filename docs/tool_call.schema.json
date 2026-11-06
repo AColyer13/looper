@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AColyer13/looper/docs/tool_call.schema.json",
+  "title": "looper ask tool-calling shapes (api_version 1, package >= 0.5.0)",
+  "description": "looper signals tool calls; the caller (e.g. the-office) owns execution and approval.",
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "required": ["name", "parameters"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "parameters": {
+          "type": "object",
+          "description": "JSON Schema for the tool arguments",
+          "properties": {
+            "type": { "const": "object" },
+            "properties": { "type": "object" },
+            "required": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "required": ["id", "tool", "args"],
+      "description": "Flattened argument fields are also present alongside args for convenience.",
+      "properties": {
+        "id": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "tool_result": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "description": "Matches tool_call.id" },
+        "tool": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "output": { "type": ["string", "object", "array", "number", "boolean", "null"] },
+        "error": { "type": "string" }
+      }
+    },
+    "message": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "role": { "enum": ["system", "user", "assistant", "tool"] },
+        "content": { "type": "string" },
+        "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/tool_call" } },
+        "tool_call_id": { "type": "string" },
+        "tool": { "type": "string" },
+        "ok": { "type": "boolean" }
+      }
+    },
+    "ask_request": {
+      "type": "object",
+      "properties": {
+        "agent": { "type": "string" },
+        "prompt": { "type": "string" },
+        "system": { "type": "string" },
+        "tools": { "type": "array", "items": { "$ref": "#/$defs/tool" } },
+        "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+        "tool_results": { "type": "array", "items": { "$ref": "#/$defs/tool_result" } },
+        "max_tool_calls": { "type": "integer", "minimum": 0 },
+        "protocol": { "enum": ["native", "json_block", "none"] },
+        "cwd": { "type": "string" },
+        "timeout": { "type": "number" },
+        "max_tokens": { "type": "integer" },
+        "temperature": { "type": "number" },
+        "team": {}
+      }
+    },
+    "ask_response": {
+      "type": "object",
+      "required": ["ok", "text", "tool_calls", "finish_reason", "protocol", "messages", "agent"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "text": { "type": "string" },
+        "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/tool_call" } },
+        "finish_reason": { "enum": ["stop", "tool_calls", "length", "error"] },
+        "protocol": { "enum": ["native", "json_block", "none"] },
+        "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+        "agent": { "type": "object" },
+        "seconds": { "type": "number" },
+        "error": { "type": ["string", "null"] },
+        "usage": { "type": ["object", "null"] },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
