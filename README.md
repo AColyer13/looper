@@ -27,7 +27,7 @@ looper agents                                  # every configured agent and whet
 cd looper
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-looper --version        # looper 0.4.1
+looper --version        # looper 0.5.0
 pytest                  # all tests use fakes, so no real CLIs are needed
 ```
 
@@ -424,3 +424,25 @@ and why frontends should call `looper ask --stdin` / `--prompt-file` for long pe
 For the child CLI itself, set `"prompt_via": "stdin"` (always pipe) or `"prompt_via": "auto"` (argv for short
 prompts, stdin above ~100 KB). With `"arg"` (default), a prompt longer than 100 KB raises a clear error instead of
 silently truncating against `ARG_MAX`.
+
+## Tool calls (caller-owned)
+
+`looper ask` can return structured `tool_calls` when you offer tools. **looper
+never runs them** — your app (e.g. the-office desk) does. See
+[`docs/FRONTEND_API.md`](docs/FRONTEND_API.md) for the request/response shape,
+protocol table, and multi-step loop. Capabilities: `tool_calls`, `tool_results`.
+
+```bash
+looper ask --json --agent sonnet --request-json - <<'EOF'
+{
+  "prompt": "write src/hi.js that logs hello",
+  "tools": [
+    {"name": "write_file", "description": "Write a file",
+     "parameters": {"type": "object",
+       "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+       "required": ["path", "content"]}}
+  ]
+}
+EOF
+```
+
