@@ -111,4 +111,4 @@ def test_unknown_agent_flag():
 
 def test_version():
     r = runner.invoke(app, ["--version"])
-    assert "0.4.1" in r.output
+    assert "0.5.0" in r.output
