@@ -31,6 +31,9 @@ CAPABILITIES = [
     "run_events",
     "ask",
     "ask_stdin",
+    "ask_tools",
+    "tool_calls",
+    "tool_results",
     "serve",
     "team_override",
     "assign_override",
@@ -336,26 +339,85 @@ def enrich_plan(
 # --------------------------------------------------------------------------- ask (single turn)
 
 
+def parse_ask_request(raw: dict | None = None, **fields: Any) -> dict[str, Any]:
+    """Normalize an ask request from HTTP body / ``--request-json`` / kwargs.
+
+    Accepted keys: prompt, system, tools, messages, tool_results, max_tool_calls,
+    agent, cwd, timeout, max_tokens, temperature, protocol (force).
+    """
+    data = dict(raw or {})
+    for k, v in fields.items():
+        if v is not None and k not in data:
+            data[k] = v
+    return data
+
+
 def ask(
     policy: Policy,
     agent_name: str,
-    prompt: str,
+    prompt: str | None = None,
     *,
+    request: dict[str, Any] | None = None,
     runner: Runner | None = None,
     available: dict[str, str] | None = None,
     cwd: str | Path | None = None,
     timeout: float | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    system: str | None = None,
+    tools: list[Any] | None = None,
+    messages: list[Any] | None = None,
+    tool_results: list[Any] | None = None,
+    max_tool_calls: int | None = None,
+    protocol: str | None = None,
 ) -> dict[str, Any]:
-    """Send one prompt to one team agent. Returns {text, agent, ok, ...}."""
+    """Send one prompt (optionally with tools) to one team agent.
+
+    Returns ``{ok, text, tool_calls, finish_reason, protocol, messages, agent, ...}``.
+    Plain text with ``tool_calls: []`` is the valid fallback when no tools were
+    offered or the model chose not to call any. looper never executes tools.
+    """
+    from looper import tools as toolmod
+    from looper.assign import max_tokens_for
+    from looper.tiers import resolve_tier
+
+    req = parse_ask_request(
+        request,
+        prompt=prompt,
+        system=system,
+        tools=tools,
+        messages=messages,
+        tool_results=tool_results,
+        max_tool_calls=max_tool_calls,
+        cwd=str(cwd) if cwd else None,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        protocol=protocol,
+    )
     if agent_name not in policy.agents:
         raise ConfigError(f"unknown agent '{agent_name}' (known: {', '.join(policy.agents)})")
     agent = policy.agents[agent_name]
+
+    try:
+        tool_specs = toolmod.parse_tools(req.get("tools"))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+    try:
+        seeded = toolmod.seed_messages(
+            prompt=(req.get("prompt") or None),
+            system=req.get("system"),
+            messages=req.get("messages"),
+            tool_results=req.get("tool_results"),
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+    # Resolve readiness
     if available is None:
         available, missing = default_available(policy)
         if agent_name not in available:
-            # try just this agent
             ep, why = agent_endpoint(agent)
             if ep is None:
                 raise ConfigError(f"agent '{agent_name}' is not ready: {why}")
@@ -368,47 +430,166 @@ def ask(
 
     members = {m.name: m for m in build_members(policy, available)}
     m = members.get(agent_name)
-    from looper.assign import max_tokens_for
-    endpoint = available[agent_name]
-    to = float(timeout or agent.timeout_seconds or policy.defaults.timeout_seconds)
-    mt = max_tokens if max_tokens is not None else (max_tokens_for(m) if m else None)
-    try:
-        inv = prepare_invocation(
-            agent, endpoint, prompt, to, str(cwd) if cwd else None,
-            max_tokens=mt, temperature=temperature,
-            num_ctx=m.info.context_tokens if m and agent.kind == "local" else None,
-            disable_thinking=bool(m and m.tier.disable_thinking),
+    ti = resolve_tier(agent, policy)
+    tier_spec = policy.tiers.get(ti.tier)
+    structured = tier_spec.structured_output if tier_spec else "good"
+
+    proto, proto_warnings = toolmod.choose_protocol(
+        tools=tool_specs,
+        agent_kind=agent.kind,
+        api_style=agent.api_style,
+        tier_name=ti.tier,
+        structured_output=structured,
+        force=req.get("protocol"),
+    )
+    mt_limit = toolmod.max_tool_calls_for(proto, ti.tier, req.get("max_tool_calls"))
+
+    # Build the prompt string for CLI / argv (HTTP uses messages)
+    user_bits = [x.get("content", "") for x in seeded if x.get("role") == "user"]
+    prompt_text = user_bits[-1] if user_bits else (req.get("prompt") or "")
+    system_text = next((x.get("content", "") for x in seeded if x.get("role") == "system"), None)
+
+    # For json_block / CLI: inject tool instructions into system (or prepend to prompt)
+    effective_system = system_text
+    effective_messages = list(seeded)
+    if proto == "json_block" and tool_specs:
+        instr = toolmod.json_block_instructions(tool_specs, max_calls=mt_limit)
+        if effective_system:
+            effective_system = effective_system.rstrip() + "\n\n" + instr
+        else:
+            effective_system = instr
+        # rebuild messages with updated system
+        effective_messages = toolmod.seed_messages(
+            prompt=None,
+            system=effective_system,
+            messages=[x for x in seeded if x.get("role") != "system"],
+            tool_results=None,  # already applied in seeded
         )
-    except PromptTooLongError as exc:
-        return {
+        # seeded already has tool results; the filter above dropped system only.
+        # Re-apply by taking non-system from seeded and new system:
+        effective_messages = [{"role": "system", "content": effective_system}] + [
+            x for x in seeded if x.get("role") != "system"
+        ]
+    elif proto == "none" and tool_specs:
+        # tiny tier refusal — still call the model for text, without tools
+        pass
+
+    # CLI delivery uses a flattened prompt (system + conversation summary)
+    if agent.kind == "cli":
+        parts: list[str] = []
+        if effective_system:
+            parts.append(effective_system)
+        for msg in effective_messages:
+            if msg.get("role") == "system":
+                continue
+            role = msg.get("role", "user")
+            if role == "tool":
+                parts.append(
+                    f"[tool_result id={msg.get('tool_call_id')} tool={msg.get('tool','')} ok={msg.get('ok')}]\n"
+                    f"{msg.get('content','')}"
+                )
+            elif role == "assistant":
+                parts.append(f"[assistant]\n{msg.get('content','')}")
+                for tc in msg.get("tool_calls") or []:
+                    parts.append(f"[prior_tool_call] {tc.get('tool')} {tc.get('args')}")
+            else:
+                parts.append(msg.get("content") or "")
+        cli_prompt = "\n\n".join(p for p in parts if p)
+    else:
+        cli_prompt = prompt_text
+
+    endpoint = available[agent_name]
+    to = float(req.get("timeout") or timeout or agent.timeout_seconds or policy.defaults.timeout_seconds)
+    mt = req.get("max_tokens") if req.get("max_tokens") is not None else (
+        max_tokens if max_tokens is not None else (max_tokens_for(m) if m else None)
+    )
+    temp = req.get("temperature") if req.get("temperature") is not None else temperature
+    work_cwd = req.get("cwd") or (str(cwd) if cwd else None)
+
+    extra_argv: list[str] = []
+    if agent.kind == "cli" and tool_specs and proto != "none":
+        # Prefer per-agent config override if present on the raw agent entry
+        agent_extra = None
+        raw_agents = (policy.raw or {}).get("agents") or {}
+        if isinstance(raw_agents.get(agent.name), dict):
+            agent_extra = raw_agents[agent.name].get("caller_tools_extra_args")
+        extra_argv = toolmod.cli_extra_args_for_caller_tools(agent.name, agent_extra)
+
+    agent_info = {
+        "name": agent.name,
+        "kind": agent.kind,
+        "provider": agent.provider,
+        "model": agent.model or agent.binary,
+        "tier": m.tier.name if m else ti.tier,
+    }
+
+    def _fail(err: str, **extra: Any) -> dict[str, Any]:
+        out = {
             "ok": False,
             "text": "",
-            "agent": {
-                "name": agent.name,
-                "kind": agent.kind,
-                "provider": agent.provider,
-                "model": agent.model or agent.binary,
-                "tier": m.tier.name if m else None,
-            },
+            "tool_calls": [],
+            "finish_reason": "error",
+            "protocol": proto,
+            "messages": effective_messages,
+            "agent": agent_info,
             "seconds": 0.0,
-            "error": str(exc),
+            "error": err,
             "usage": None,
+            "warnings": list(proto_warnings) + list(extra.pop("warnings", [])),
         }
+        out.update(extra)
+        return out
+
+    try:
+        inv = prepare_invocation(
+            agent, endpoint, cli_prompt, to, work_cwd,
+            max_tokens=mt, temperature=temp,
+            num_ctx=m.info.context_tokens if m and agent.kind == "local" else None,
+            disable_thinking=bool(m and m.tier.disable_thinking),
+            system=effective_system,
+            messages=effective_messages if agent.kind != "cli" else [],
+            tools=tool_specs if proto != "none" else [],
+            protocol=proto if proto != "none" else "none",
+            max_tool_calls=mt_limit,
+            extra_argv=extra_argv,
+        )
+    except PromptTooLongError as exc:
+        return _fail(str(exc))
+
     run = runner or DispatchRunner()
     res: CallResult = run(inv)
+
+    text = res.output if res.ok else ""
+    tool_calls = list(res.tool_calls or [])
+    finish = res.finish_reason or ("stop" if res.ok else "error")
+    warnings = list(proto_warnings) + list(res.warnings or [])
+
+    # CLI / FakeRunner path: parse json_block from text when the runner didn't
+    if res.ok and proto == "json_block" and tool_specs and not tool_calls:
+        text, tool_calls, w = toolmod.parse_json_block(text, tool_specs, max_calls=mt_limit)
+        warnings.extend(w)
+        if tool_calls:
+            finish = "tool_calls"
+
+    if proto == "none" and tool_specs:
+        # Ensure we never return tool_calls for tiny-tier refusal
+        tool_calls = []
+        finish = "stop" if res.ok else "error"
+
+    messages_out = toolmod.append_assistant_message(effective_messages, text, tool_calls) if res.ok else effective_messages
+
     out: dict[str, Any] = {
         "ok": res.ok,
-        "text": res.output if res.ok else "",
-        "agent": {
-            "name": agent.name,
-            "kind": agent.kind,
-            "provider": agent.provider,
-            "model": agent.model or agent.binary,
-            "tier": m.tier.name if m else None,
-        },
+        "text": text if res.ok else "",
+        "tool_calls": tool_calls if res.ok else [],
+        "finish_reason": finish if res.ok else "error",
+        "protocol": proto,
+        "messages": messages_out,
+        "agent": agent_info,
         "seconds": round(res.seconds, 3),
         "error": res.error,
-        "usage": None,  # reserved; runners don't yet surface token counts
+        "usage": res.usage,
+        "warnings": warnings,
     }
     if not res.ok:
         out["stderr"] = res.stderr
