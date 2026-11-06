@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- **Workspace.** `~/.looper/` (or `$LOOPER_STATE_HOME`) holds machine skills and optional `looper.json`. `<project>/.looper/` holds `AGENTS.md`, optional `SOUL.md` / `USER.md` / `MEMORY.md` / `memory/`, `roles/<role>.md`, and project skills. The project root is the nearest ancestor of the working directory that contains `.looper/`, or `--project` / request field `project`. `~/.looper/looper.json` is preferred over `~/.config/looper/looper.json` when it exists. Credentials stay in `~/.config/looper/credentials.env` (or the keyring). With no `.looper/` directory and no MCP config, prompts and tool behaviour are unchanged.
+- **Skills.** `SKILL.md` (`name` + `description` frontmatter). Project skills override machine skills of the same name. The prompt receives only the name and description. The built-in `load_skill` tool is executed by looper and returns the body. `looper skills list`.
+- **MCP.** `mcp.servers` in looper.json, `<project>/.looper/mcp.json`, and Claude Code `<project>/.mcp.json`. Stdio (`command`/`args`/`env`) and streamable HTTP (`url`; SSE responses accepted). `${VAR}` in env/headers/args is filled from the environment, keyring, or `credentials.env` and is never written back or placed on argv. `looper mcp list`, `looper mcp tools <server>`.
+- **Approval policy.** Read-only MCP tools (`readOnlyHint: true` and not destructive) run inside the turn. Everything else comes back as `finish_reason: "approval_required"` and a `pending` list. Resume with `approvals: [{id, decision}]` on the next `ask` / `POST /v1/ask`. Precedence: deny > require_approval > allow/auto_approve > annotation default. Modes: `auto_read_only` (default), `approve_all`, `deny_all`. Per-role overrides live in `roles/*.md` frontmatter. Caller-owned tools are still never executed. The tiny tier still gets no tools.
+- **CLI runners.** Claude Code receives `--append-system-prompt-file` and `--mcp-config`. Codex receives `-c project_doc_fallback_filenames` and `-c mcp_servers.*` (credential values only via the child environment). Grok and Antigravity have no per-run file flag, so `.looper/AGENTS.md` is injected into the prompt and looper hosts MCP.
+- **doctor / version.** Additive `workspace`, `skills`, and `mcp` objects. Capabilities: `workspace`, `skills`, `mcp`, `mcp_approval`. `api_version` stays **1**.
+
 ## 0.6.0
 
 - **History trimming** for `looper ask` (opt-in, default **off**). When estimated history exceeds `context_window × budget_fill` (default 0.5), apply in order until under budget: (1) stub old Write/write_file bodies (and trivial bash heredoc writes), (2) head+tail old tool results while keeping error lines, (3) deterministic middle-collapse ledger. Pairing (`tool_call_id` / Anthropic `tool_use`↔`tool_result`) is preserved.

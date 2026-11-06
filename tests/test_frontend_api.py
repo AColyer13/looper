@@ -40,7 +40,7 @@ def test_version_json():
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
     assert data["name"] == "looper"
-    assert data["version"] == "0.6.0"
+    assert data["version"] == "0.7.0"
     assert data["api_version"] == API_VERSION == 1
     assert "run_events" in data["capabilities"]
     assert api.version_info() == data
@@ -314,7 +314,7 @@ def test_role_label_passthrough_in_events():
 def test_version_lists_ask_stdin_capability():
     r = runner.invoke(app, ["version", "--json"])
     data = json.loads(r.output)
-    assert data["version"] == "0.6.0"
+    assert data["version"] == "0.7.0"
     assert "ask_stdin" in data["capabilities"]
     assert data["api_version"] == 1
 

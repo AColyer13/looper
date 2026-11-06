@@ -1,7 +1,7 @@
 {
   "$id": "looper-team-spec",
   "spec_version": 1,
-  "looper_version": "0.6.0",
+  "looper_version": "0.7.0",
   "description": "Capability tiers, role taxonomy and the role-assignment / degradation algorithm used by looper. Language-neutral so other apps (e.g. the-office) can mirror it.",
   "team_limits": {
     "max_agents": 5,

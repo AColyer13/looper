@@ -35,6 +35,7 @@ _VALUE_OPTS = {
     "--loop", "-l", "--config", "-c", "--max-iterations", "-n", "--agent", "-a", "--cwd",
     "--meta", "--meta-json", "--role-labels-json", "--assign-json", "--team-json", "--team-file",
     "--host", "--port", "--token", "--prompt-file", "--timeout", "--request-json", "--tools-json",
+    "--project",
 }
 
 _RUN_ONLY_FLAGS = {"--dry-run", "--json", "--json-events", "--no-transcript", "--quiet", "-q", "--stdin"}
@@ -179,13 +180,15 @@ def version_cmd(json_out: bool = JsonOpt) -> None:
 def doctor_cmd(
     config: Optional[Path] = ConfigOpt,
     json_out: bool = JsonOpt,
-    no_probe: bool = typer.Option(False, "--no-probe", help="Skip CLI --version probes."),
+    no_probe: bool = typer.Option(False, "--no-probe", help="Skip CLI --version probes and MCP connections."),
     team_json: Optional[str] = typer.Option(None, "--team-json", help="Inline team JSON override."),
     team_file: Optional[Path] = typer.Option(None, "--team-file", help="Team JSON file override."),
+    cwd: Optional[Path] = typer.Option(None, "--cwd", help="Start the project-root walk here."),
+    project: Optional[Path] = typer.Option(None, "--project", help="Project root (directory that contains .looper/)."),
 ) -> None:
-    """Check whether looper is usable: config, team, CLIs, keys, local servers."""
+    """Check whether looper is usable: config, team, CLIs, keys, local servers, workspace, MCP."""
     pol = _policy(config, team_json=team_json, team_file=team_file)
-    doc = frontend_api.doctor(pol, probe=not no_probe)
+    doc = frontend_api.doctor(pol, probe=not no_probe, cwd=cwd, project=project)
     if json_out:
         # print JSON even on failure; exit code signals usability
         sys.stdout.write(json.dumps(doc, default=str) + "\n")
@@ -206,6 +209,12 @@ def doctor_cmd(
     out.print(t)
     for p in doc["problems"]:
         out.print(f"[yellow]•[/yellow] {escape(p)}")
+    ws = doc.get("workspace") or {}
+    if ws:
+        root = ws.get("project_root") or "(no project .looper)"
+        out.print(f"workspace: {escape(str(root))} · skills={len(doc.get('skills') or [])} · "
+                  f"mcp={len((doc.get('mcp') or {}).get('servers') or [])} "
+                  f"mode={(doc.get('mcp') or {}).get('mode', 'auto_read_only')}")
     if not doc["usable"]:
         raise typer.Exit(1)
 
@@ -227,6 +236,8 @@ def plan_cmd(
     meta_json: Optional[str] = typer.Option(None, "--meta-json", help="Passthrough JSON object."),
     use_stdin: bool = typer.Option(False, "--stdin", help="Read the task from stdin ( avoids OS argv length limits)."),
     prompt_file: Optional[Path] = typer.Option(None, "--prompt-file", help="Read the task from a file."),
+    cwd: Optional[Path] = typer.Option(None, "--cwd", help="Start the project-root walk here."),
+    project: Optional[Path] = typer.Option(None, "--project", help="Project root (directory that contains .looper/)."),
 ) -> None:
     """Route + adapt a task and print the stage plan (no execution). Default output is JSON."""
     prompt = _resolve_prompt(prompt, use_stdin=use_stdin, prompt_file=prompt_file,
@@ -238,7 +249,8 @@ def plan_cmd(
         meta_obj = frontend_api.parse_meta(meta, meta_json)
         warnings = frontend_api.validate_assign(pol, assign) if assign else []
         decision = route_prompt(prompt, pol, override=loop)
-        ex = Executor(pol, force_agent=agent, max_iterations=max_iterations, assign=assign or None)
+        ex = Executor(pol, force_agent=agent, max_iterations=max_iterations, assign=assign or None,
+                      cwd=cwd, project=project)
         plan = frontend_api.enrich_plan(ex.plan(prompt, decision.loop, decision),
                                         role_labels=labels, meta=meta_obj, assign=assign,
                                         assign_warnings=warnings)
@@ -270,6 +282,7 @@ def ask_cmd(
              "When set, prompt argv/--stdin/--prompt-file are optional."),
     tools_json: Optional[str] = typer.Option(
         None, "--tools-json", help="Tools array JSON (merged into the request)."),
+    project: Optional[Path] = typer.Option(None, "--project", help="Project root (directory that contains .looper/)."),
 ) -> None:
     """Send one prompt to one team agent (CLI / API / local). For chat-like character turns.
 
@@ -323,6 +336,8 @@ def ask_cmd(
 
     try:
         pol = _policy(config, team_json=team_json, team_file=team_file)
+        if project is not None and "project" not in req:
+            req["project"] = str(project)
         result = frontend_api.ask(pol, agent, request=req, cwd=cwd, timeout=timeout)
     except (ConfigError, ValueError) as exc:
         err.print(f"[red]{escape(str(exc))}[/red]")
@@ -648,6 +663,7 @@ def run_cmd(
     meta_json: Optional[str] = typer.Option(None, "--meta-json", help="Passthrough JSON object."),
     use_stdin: bool = typer.Option(False, "--stdin", help="Read the task from stdin (avoids OS argv limits)."),
     prompt_file: Optional[Path] = typer.Option(None, "--prompt-file", help="Read the task from a file."),
+    project: Optional[Path] = typer.Option(None, "--project", help="Project root (directory that contains .looper/)."),
 ) -> None:
     """Route the task, then run the chosen loop with real CLIs / models."""
     # Backward compatible: omitting the task on a pipe still reads stdin.
@@ -671,7 +687,7 @@ def run_cmd(
         human_events = None if (quiet or json_out or json_events) else _event_printer
         ex = Executor(pol, force_agent=agent, max_iterations=max_iterations, cwd=cwd,
                       on_event=human_events, assign=assign or None, cancel=cancel,
-                      emitter=emitter, meta=meta_obj, role_labels=labels)
+                      emitter=emitter, meta=meta_obj, role_labels=labels, project=project)
     except (ConfigError, ValueError) as exc:
         err.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2)
@@ -854,6 +870,121 @@ def setup_cmd(
 keys_app = typer.Typer(help="Manage API keys (stored outside looper.json; values are never printed).",
                        no_args_is_help=True)
 app.add_typer(keys_app, name="keys")
+
+skills_app = typer.Typer(help="List SKILL.md skills from ~/.looper/skills and <project>/.looper/skills.",
+                         no_args_is_help=True)
+app.add_typer(skills_app, name="skills")
+
+mcp_app = typer.Typer(help="List MCP servers and their tools (stdio or streamable HTTP).",
+                      no_args_is_help=True)
+app.add_typer(mcp_app, name="mcp")
+
+
+def _workspace_for_cli(config: Optional[Path], project: Optional[Path], cwd: Optional[Path]):
+    from looper.workspace import load_workspace
+    pol = _policy(config)
+    start = cwd or Path.cwd()
+    return pol, load_workspace(start=start, project=project, policy_raw=pol.raw, policy_path=pol.path)
+
+
+@skills_app.command("list")
+def skills_list_cmd(
+    config: Optional[Path] = ConfigOpt,
+    json_out: bool = JsonOpt,
+    project: Optional[Path] = typer.Option(None, "--project", help="Project root."),
+    cwd: Optional[Path] = typer.Option(None, "--cwd", help="Start the project-root walk here."),
+) -> None:
+    """List skills. Project skills override machine skills with the same name."""
+    _pol, ws = _workspace_for_cli(config, project, cwd)
+    rows = [s.public() for s in ws.skills.values()]
+    if json_out:
+        _emit_json({"skills": rows, "enabled": ws.skills_enabled,
+                    "project_root": str(ws.project_root) if ws.project_root else None})
+        return
+    if not rows:
+        out.print("[dim]no skills (add ~/.looper/skills/<name>/SKILL.md or <project>/.looper/skills/<name>/SKILL.md)[/dim]")
+        return
+    t = Table(title="Skills")
+    for col in ("Name", "Scope", "Description", "Path"):
+        t.add_column(col)
+    for row in rows:
+        t.add_row(row["name"], row["scope"], escape(row["description"]), escape(row["path"]))
+    out.print(t)
+
+
+@mcp_app.command("list")
+def mcp_list_cmd(
+    config: Optional[Path] = ConfigOpt,
+    json_out: bool = JsonOpt,
+    project: Optional[Path] = typer.Option(None, "--project"),
+    cwd: Optional[Path] = typer.Option(None, "--cwd"),
+    no_probe: bool = typer.Option(False, "--no-probe", help="Do not connect to servers."),
+) -> None:
+    """List configured MCP servers and whether each one answers."""
+    pol, _ws = _workspace_for_cli(config, project, cwd)
+    doc = frontend_api.doctor(pol, probe=not no_probe, cwd=cwd, project=project)
+    payload = doc.get("mcp") or {"mode": "auto_read_only", "servers": []}
+    if json_out:
+        _emit_json(payload)
+        return
+    out.print(f"mode: {payload.get('mode')}")
+    rows = payload.get("servers") or []
+    if not rows:
+        out.print("[dim]no MCP servers (mcp.servers in looper.json, .looper/mcp.json, or .mcp.json)[/dim]")
+        return
+    t = Table(title="MCP servers")
+    for col in ("Server", "Transport", "Reachable", "Tools", "Source", "Error"):
+        t.add_column(col)
+    for row in rows:
+        reach = "-" if row.get("reachable") is None else ("yes" if row["reachable"] else "no")
+        t.add_row(row["name"], row.get("transport") or "", reach,
+                  str(row.get("tool_count") if row.get("tool_count") is not None else "-"),
+                  escape(str(row.get("source") or "")), escape(str(row.get("error") or "")))
+    out.print(t)
+
+
+@mcp_app.command("tools")
+def mcp_tools_cmd(
+    server: str = typer.Argument(..., help="Server name from `looper mcp list`."),
+    config: Optional[Path] = ConfigOpt,
+    json_out: bool = JsonOpt,
+    project: Optional[Path] = typer.Option(None, "--project"),
+    cwd: Optional[Path] = typer.Option(None, "--cwd"),
+) -> None:
+    """Connect to one MCP server and list its tools."""
+    from looper.mcp_client import McpError, connect_and_list
+    from looper.mcp_config import scrub, tool_visible
+    _pol, ws = _workspace_for_cli(config, project, cwd)
+    spec = ws.mcp.servers.get(server)
+    if spec is None:
+        err.print(f"[red]unknown MCP server {server!r}. Known: {', '.join(ws.mcp.servers) or '(none)'}[/red]")
+        raise typer.Exit(2)
+    if spec.error:
+        err.print(f"[red]{escape(scrub(spec.error, spec.secrets))}[/red]")
+        raise typer.Exit(1)
+    try:
+        infos = [t for t in connect_and_list(spec, timeout=10) if tool_visible(spec, t.name)]
+    except McpError as exc:
+        err.print(f"[red]{escape(scrub(str(exc), spec.secrets))}[/red]")
+        raise typer.Exit(1)
+    rows = [{
+        "name": t.name,
+        "description": t.description,
+        "read_only": t.annotations.get("readOnlyHint") is True and t.annotations.get("destructiveHint") is not True,
+        "annotations": {
+            "readOnlyHint": t.annotations.get("readOnlyHint"),
+            "destructiveHint": t.annotations.get("destructiveHint"),
+        },
+    } for t in infos]
+    if json_out:
+        _emit_json({"server": server, "tools": rows})
+        return
+    t = Table(title=f"MCP tools · {server}")
+    for col in ("Tool", "Read-only", "Description"):
+        t.add_column(col)
+    for row in rows:
+        t.add_row(row["name"], "yes" if row["read_only"] else "no", escape(row["description"]))
+    out.print(t if rows else "[dim]server returned no tools[/dim]")
 
 
 def _env_for(name: str, pol: Policy) -> tuple[str, list[str]]:

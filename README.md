@@ -27,7 +27,7 @@ looper agents                                  # every configured agent and whet
 cd looper
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-looper --version        # looper 0.6.0
+looper --version        # looper 0.7.0
 pytest                  # all tests use fakes, so no real CLIs are needed
 ```
 
@@ -164,7 +164,7 @@ algorithm. A JS app (e.g. the-office) can mirror looper's behaviour from it. Reg
 flowchart LR
     U["looper run / --loop / route"] --> CFG
     subgraph Policy["1 · Policy / strategy layer (policy.py, config.py)"]
-        CFG["config search:<br/>--config → $LOOPER_CONFIG → ./looper.json →<br/>~/.config/looper/looper.json → bundled default"] --> VAL["validate + build Policy<br/>agents · strategies (role→CLIs) · loops · router"]
+        CFG["config search:<br/>--config → $LOOPER_CONFIG → ./looper.json →<br/>~/.looper/looper.json → ~/.config/looper/looper.json → bundled default"] --> VAL["validate + build Policy<br/>agents · strategies (role→CLIs) · loops · router"]
     end
     VAL --> R["2 · Router (router.py)<br/>weighted keyword/regex rules → loop + score + reason<br/>--loop override · default: react"]
     R --> P{"--dry-run?"}
@@ -216,6 +216,9 @@ flowchart LR
 | `looper show <loop>` | Stages, agent preferences, exit conditions, caps, route rules |
 | `looper init [--path p] [--force]` | Write the full sample config to `./looper.json` |
 | `looper validate` | Validate the effective config |
+| `looper skills list` | Skills from `~/.looper/skills` and `<project>/.looper/skills` (project wins on name) |
+| `looper mcp list` | MCP servers, mode, and whether each one answers |
+| `looper mcp tools <server>` | Connect and list one server's tools |
 
 Flags for `run` (and the root shorthand):
 
@@ -479,13 +482,143 @@ stays the **full** caller-owned history; inspect `trim` for what the provider sa
 
 Recommended for **local models with ≤32k** context — see `docs/MODEL_TIERS.md`.
 
+## Workspace, skills, and MCP (0.7)
+
+looper stays stateless per call. A workspace only adds files it reads at the
+start of `ask` / `run` / `doctor`. No `.looper/` directory and no MCP config
+means the same prompts and the same tool behaviour as 0.6.
+
+```
+~/.looper/                         per machine ($LOOPER_STATE_HOME)
+  looper.json                      models, policy, mcp.servers, skills settings
+  skills/<name>/SKILL.md           shared by every project
+  sessions/                        generated MCP config for CLI runners (0600)
+  logs/
+<project>/.looper/                 per project, safe to commit
+  AGENTS.md                        operating rules, loaded every run
+  SOUL.md                          optional persona, only if the caller supplies none
+  USER.md                          optional user preferences
+  MEMORY.md, memory/               optional notes (capped)
+  roles/<role>.md                  per-role rules
+  skills/<name>/SKILL.md           overrides a machine skill with the same name
+  mcp.json                         optional project MCP servers
+<project>/.mcp.json                also read (Claude Code mcpServers shape)
+```
+
+The project root is the nearest directory at or above the working directory
+that contains `.looper/`. Override it with `--project` or the request field
+`project`. Credentials do **not** move: they stay in `~/.config/looper/credentials.env`
+(`$LOOPER_HOME`) or the OS keyring. `~/.looper/looper.json` is used as the
+playbook config only when that file exists and nothing earlier in the search
+order matched.
+
+`AGENTS.md` and the selected role (`--` request `role`, or the stage role on
+`run`) are injected into the system prompt. `SOUL.md` is used only when the
+caller did not pass a system persona. For Claude Code and Codex, `AGENTS.md`
+and MCP config go through the CLI's own flags instead of being copied into the
+prompt (`--append-system-prompt-file` / `--mcp-config`, and Codex `-c`).
+Grok and Antigravity have no per-run file flag, so the text is injected and
+looper hosts MCP itself.
+
+### Skills
+
+```markdown
+---
+name: ship
+description: Use when the user asks to cut a release.
+---
+
+The full checklist lives here and is not placed in the prompt.
+```
+
+The prompt lists `ship: Use when the user asks to cut a release.` A built-in
+`load_skill` tool, executed by looper, returns the body. The tiny tier gets no
+tools, including `load_skill`. Set `"skills": {"enabled": false}` to turn the
+catalog off.
+
+### MCP and the approval policy
+
+```json
+{
+  "mcp": {
+    "mode": "auto_read_only",
+    "deny": ["*:*delete*"],
+    "require_approval": [],
+    "allow": [],
+    "auto_approve": ["notes:read_note"],
+    "servers": {
+      "notes": {
+        "command": "python",
+        "args": ["server.py"],
+        "env": {"NOTES_TOKEN": "${NOTES_TOKEN}"},
+        "include": ["read_*", "write_note"],
+        "exclude": ["debug_*"]
+      },
+      "docs": {
+        "url": "https://example.com/mcp",
+        "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}
+      }
+    }
+  }
+}
+```
+
+`${VAR}` is read from the environment, the keyring, or `credentials.env`. The
+expanded value is never written back to the project file and never placed on
+argv. A project `.looper/mcp.json` overrides a same-named server from
+`.mcp.json` and from the machine config. Allow/deny lists accumulate; the last
+file that sets `mode` wins.
+
+Decision, first match wins:
+
+**deny > require_approval > allow / auto_approve > annotation default**
+
+| Mode | What the annotation default means |
+|---|---|
+| `auto_read_only` (default) | `readOnlyHint: true` and not `destructiveHint` runs inside the turn. Writes, destructive tools, and unannotated tools are returned as `pending`. |
+| `approve_all` | Every tool needs approval unless allow/auto_approve says otherwise. |
+| `deny_all` | Every tool is refused unless allow/auto_approve says otherwise. |
+
+A tool on a deny list is refused even if it is also auto-approved, and even if
+the caller later sends `decision: "approve"`. `require_approval` forces a
+pending call even for a read-only tool.
+
+Per role, in `.looper/roles/coder.md`:
+
+```markdown
+---
+model: grok
+max_tool_calls: 3
+mcp_mode: approve_all
+deny:
+  - write_note
+require_approval:
+  - read_note
+auto_approve:
+  - list_dir
+---
+
+Write tests first.
+```
+
+`model` is preferred for `run` stages with that role. `max_tool_calls` applies
+when `ask` is called with `"role": "coder"`. Role lists use the same precedence
+as the global lists (a role deny beats a server auto_approve).
+
+`doctor --json` adds `workspace`, `skills`, and `mcp` (reachability and tool
+names; secret values are not included). `version --json` advertises
+`workspace`, `skills`, `mcp`, and `mcp_approval`. The approval resume shape is
+in [`docs/FRONTEND_API.md`](docs/FRONTEND_API.md).
+
 
 ## Tool calls (caller-owned)
 
-`looper ask` can return structured `tool_calls` when you offer tools. **looper
-never runs them** — your app (e.g. the-office desk) does. See
+`looper ask` can return structured `tool_calls` when you offer tools. **Caller-owned
+tools are never run by looper** — your app (e.g. the-office desk) does. looper
+does run `load_skill` and MCP tools the approval policy marks automatic. See
 [`docs/FRONTEND_API.md`](docs/FRONTEND_API.md) for the request/response shape,
-protocol table, and multi-step loop. Capabilities: `tool_calls`, `tool_results`.
+protocol table, multi-step loop, and the `approval_required` resume. Capabilities:
+`tool_calls`, `tool_results`, `mcp_approval`.
 
 ```bash
 looper ask --json --agent sonnet --request-json - <<'EOF'

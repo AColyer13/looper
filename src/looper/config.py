@@ -6,8 +6,9 @@ sets ``"inherit_defaults": false``):
 1. ``--config PATH`` flag
 2. ``$LOOPER_CONFIG``
 3. ``./looper.json``
-4. ``~/.config/looper/looper.json`` (honours ``$LOOPER_HOME`` / ``$XDG_CONFIG_HOME``)
-5. bundled default (``looper/data/default_config.json``)
+4. ``~/.looper/looper.json`` (honours ``$LOOPER_STATE_HOME``; skipped when absent)
+5. ``~/.config/looper/looper.json`` (honours ``$LOOPER_HOME`` / ``$XDG_CONFIG_HOME``)
+6. bundled default (``looper/data/default_config.json``)
 """
 
 from __future__ import annotations
@@ -41,6 +42,18 @@ def user_config_dir() -> Path:
     return Path(base) / "looper"
 
 
+def state_dir() -> Path:
+    """Machine workspace: ``$LOOPER_STATE_HOME`` or ``~/.looper``.
+
+    Distinct from :func:`user_config_dir` (``~/.config/looper``), which still holds
+    credentials and the legacy ``looper.json``. Credentials never move.
+    """
+    env = os.environ.get("LOOPER_STATE_HOME")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".looper"
+
+
 def candidate_paths(explicit: Path | str | None = None) -> list[tuple[str, Path]]:
     out: list[tuple[str, Path]] = []
     if explicit:
@@ -49,6 +62,9 @@ def candidate_paths(explicit: Path | str | None = None) -> list[tuple[str, Path]
     if env:
         out.append(("$LOOPER_CONFIG", Path(env).expanduser()))
     out.append(("./looper.json", Path.cwd() / "looper.json"))
+    # Preferred machine config when present. Absent file is skipped, so a
+    # setup that only has ~/.config/looper/looper.json behaves as before.
+    out.append(("~/.looper", state_dir() / "looper.json"))
     out.append(("user", user_config_dir() / "looper.json"))
     return out
 

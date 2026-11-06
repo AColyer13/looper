@@ -43,6 +43,10 @@ CAPABILITIES = [
     "meta",
     "keys",
     "models_discover",
+    "workspace",
+    "skills",
+    "mcp",
+    "mcp_approval",
 ]
 
 
@@ -214,7 +218,80 @@ def validate_assign(policy: Policy, assign: dict[str, str]) -> list[str]:
 # --------------------------------------------------------------------------- doctor
 
 
-def doctor(policy: Policy, *, probe: bool = True) -> dict[str, Any]:
+def _public_url(url: str) -> str:
+    """Drop userinfo and query so a doctor report cannot echo embedded secrets."""
+    from urllib.parse import urlsplit, urlunsplit
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _mcp_doctor(policy: Policy, *, probe: bool, cwd: str | Path | None, project: str | Path | None) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
+    """Workspace, skills, and MCP reachability. Secrets are scrubbed."""
+    from looper.mcp_client import McpError, McpHub
+    from looper.mcp_config import scrub, tool_visible
+    from looper.workspace import load_workspace
+
+    problems: list[str] = []
+    try:
+        ws = load_workspace(
+            start=cwd, project=project, policy_raw=policy.raw, policy_path=policy.path,
+        )
+    except ConfigError as exc:
+        problems.append(str(exc))
+        from looper.workspace import Workspace
+        ws = Workspace(machine_dir=Path.home() / ".looper")
+    skills = [s.public() for s in ws.skills.values()] if ws.skills_enabled else []
+    rows: list[dict[str, Any]] = []
+    timeout = float(policy.defaults.version_probe_timeout or 3)
+    hub = McpHub(timeout=timeout) if probe else None
+    try:
+        for server in ws.mcp.servers.values():
+            row: dict[str, Any] = {
+                "name": server.name,
+                "transport": server.transport,
+                "source": server.source,
+                "command": scrub(server.command, server.secrets) if server.command else None,
+                "env_keys": sorted(server.env),
+                "include": list(server.include),
+                "exclude": list(server.exclude),
+                "reachable": None,
+                "tool_count": None,
+                "tools": None,
+                "error": scrub(server.error, server.secrets) if server.error else None,
+            }
+            if server.url:
+                row["url"] = scrub(_public_url(server.url), server.secrets)
+            if server.error:
+                problems.append(f"mcp server '{server.name}': {row['error']}")
+            elif probe and hub is not None:
+                try:
+                    infos = [t for t in hub.list_tools(server) if tool_visible(server, t.name)]
+                    row["reachable"] = True
+                    row["tool_count"] = len(infos)
+                    row["tools"] = [{
+                        "name": t.name,
+                        "description": t.description,
+                        "read_only": t.annotations.get("readOnlyHint") is True
+                        and t.annotations.get("destructiveHint") is not True,
+                    } for t in infos]
+                except McpError as exc:
+                    row["reachable"] = False
+                    row["tool_count"] = 0
+                    row["tools"] = []
+                    row["error"] = scrub(str(exc), server.secrets)
+                    problems.append(f"mcp server '{server.name}': not reachable ({row['error']})")
+            rows.append(row)
+    finally:
+        if hub is not None:
+            hub.close()
+    return ws.public(), skills, {"mode": ws.mcp.mode, "servers": rows}, problems
+
+
+def doctor(policy: Policy, *, probe: bool = True, cwd: str | Path | None = None,
+           project: str | Path | None = None) -> dict[str, Any]:
     """Health check for frontends. Never includes key values."""
     statuses = detect_agents(policy, probe=probe)
     avail, missing = default_available(policy)
@@ -284,6 +361,11 @@ def doctor(policy: Policy, *, probe: bool = True) -> dict[str, Any]:
     if not usable:
         problems.append("no ready agents: install a CLI, set an API key, or start a local server")
 
+    workspace_info, skills_info, mcp_info, mcp_problems = _mcp_doctor(
+        policy, probe=probe, cwd=cwd, project=project,
+    )
+    problems.extend(mcp_problems)
+
     return {
         "ok": usable and not any("missing" in p or "not on PATH" in p or "unreachable" in p for p in problems
                                  if p.startswith("agent ") or p.startswith("local ") or p.startswith("no ready")),
@@ -301,6 +383,9 @@ def doctor(policy: Policy, *, probe: bool = True) -> dict[str, Any]:
         "clis": clis,
         "local_servers": local_servers,
         "problems": problems,
+        "workspace": workspace_info,
+        "skills": skills_info,
+        "mcp": mcp_info,
     }
 
 
@@ -343,7 +428,8 @@ def parse_ask_request(raw: dict | None = None, **fields: Any) -> dict[str, Any]:
     """Normalize an ask request from HTTP body / ``--request-json`` / kwargs.
 
     Accepted keys: prompt, system, tools, messages, tool_results, max_tool_calls,
-    agent, cwd, timeout, max_tokens, temperature, protocol (force).
+    agent, cwd, timeout, max_tokens, temperature, protocol (force), project, role,
+    approvals.
     """
     data = dict(raw or {})
     for k, v in fields.items():
@@ -370,16 +456,30 @@ def ask(
     tool_results: list[Any] | None = None,
     max_tool_calls: int | None = None,
     protocol: str | None = None,
+    project: str | Path | None = None,
+    role: str | None = None,
+    approvals: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Send one prompt (optionally with tools) to one team agent.
 
     Returns ``{ok, text, tool_calls, finish_reason, protocol, messages, agent, ...}``.
     Plain text with ``tool_calls: []`` is the valid fallback when no tools were
-    offered or the model chose not to call any. looper never executes tools.
+    offered or the model chose not to call any.
+
+    Caller-owned tools are never executed. ``load_skill`` and MCP tools that the
+    approval policy marks automatic run inside this call. Anything else the
+    policy will not run is returned on ``pending`` with
+    ``finish_reason: approval_required``. Resume with ``approvals``.
+    With no workspace and no MCP servers this is a single model call, same as before.
     """
     from looper import tools as toolmod
     from looper.assign import max_tokens_for
+    from looper.cli_native import native_pass
+    from looper.mcp_client import McpError, McpHub
+    from looper.mcp_config import scrub
     from looper.tiers import resolve_tier
+    from looper import turn
+    from looper.workspace import load_skill_spec, load_workspace
 
     req = parse_ask_request(
         request,
@@ -394,6 +494,9 @@ def ask(
         max_tokens=max_tokens,
         temperature=temperature,
         protocol=protocol,
+        project=str(project) if project else None,
+        role=role,
+        approvals=approvals,
     )
     if agent_name not in policy.agents:
         raise ConfigError(f"unknown agent '{agent_name}' (known: {', '.join(policy.agents)})")
@@ -404,17 +507,31 @@ def ask(
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 
+    role_name = req.get("role")
+    if role_name is not None and not isinstance(role_name, str):
+        raise ConfigError("role must be a string")
+    work_cwd = req.get("cwd") or (str(cwd) if cwd else None)
+    ws = load_workspace(
+        start=work_cwd, project=req.get("project"),
+        policy_raw=policy.raw, policy_path=policy.path,
+    )
+    native = native_pass(agent, ws)
+    has_persona = turn.persona_supplied(
+        req.get("system") if isinstance(req.get("system"), str) else None,
+        req.get("messages"),
+    )
+
     try:
         seeded = toolmod.seed_messages(
             prompt=(req.get("prompt") or None),
-            system=req.get("system"),
+            system=req.get("system") if isinstance(req.get("system"), str) else None,
             messages=req.get("messages"),
             tool_results=req.get("tool_results"),
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 
-    # Resolve readiness
+    # Resolve readiness (unchanged from the pre-workspace path).
     if available is None:
         available, missing = default_available(policy)
         if agent_name not in available:
@@ -433,196 +550,306 @@ def ask(
     ti = resolve_tier(agent, policy)
     tier_spec = policy.tiers.get(ti.tier)
     structured = tier_spec.structured_output if tier_spec else "good"
+    tiny = (ti.tier or "").lower() == "tiny"
+    force_protocol = req.get("protocol")
 
-    proto, proto_warnings = toolmod.choose_protocol(
-        tools=tool_specs,
-        agent_kind=agent.kind,
-        api_style=agent.api_style,
-        tier_name=ti.tier,
-        structured_output=structured,
-        force=req.get("protocol"),
+    role_doc = ws.role_doc(role_name)
+    addition = ws.render(
+        role=role_name,
+        include_agents=not native.passes_agents,
+        include_soul=not has_persona,
+        include_skills=not tiny and force_protocol != "none" and bool(ws.skills),
     )
-    mt_limit = toolmod.max_tool_calls_for(proto, ti.tier, req.get("max_tool_calls"))
-
-    # Build the prompt string for CLI / argv (HTTP uses messages)
-    user_bits = [x.get("content", "") for x in seeded if x.get("role") == "user"]
-    prompt_text = user_bits[-1] if user_bits else (req.get("prompt") or "")
-    system_text = next((x.get("content", "") for x in seeded if x.get("role") == "system"), None)
-
-    # For json_block / CLI: inject tool instructions into system (or prepend to prompt)
-    effective_system = system_text
-    effective_messages = list(seeded)
-    if proto == "json_block" and tool_specs:
-        instr = toolmod.json_block_instructions(tool_specs, max_calls=mt_limit)
-        if effective_system:
-            effective_system = effective_system.rstrip() + "\n\n" + instr
+    if addition:
+        if seeded and seeded[0].get("role") == "system":
+            seeded[0] = {
+                "role": "system",
+                "content": turn.merge_system(seeded[0].get("content"), addition) or "",
+            }
         else:
-            effective_system = instr
-        # rebuild messages with updated system
-        effective_messages = toolmod.seed_messages(
-            prompt=None,
-            system=effective_system,
-            messages=[x for x in seeded if x.get("role") != "system"],
-            tool_results=None,  # already applied in seeded
+            seeded = [{"role": "system", "content": addition}, *seeded]
+
+    caller_names = {spec.name for spec in tool_specs}
+    owned: list[Any] = []
+    mcp_by_name: dict[str, Any] = {}
+    list_warnings: list[str] = []
+    hub = McpHub(timeout=float(
+        req.get("timeout") or timeout or agent.timeout_seconds or policy.defaults.timeout_seconds
+    ))
+    try:
+        if req.get("approvals"):
+            seeded, approval_warnings = turn.apply_approvals(
+                seeded, req.get("approvals"), ws=ws, hub=hub, role=role_name,
+            )
+            list_warnings.extend(approval_warnings)
+
+        if not tiny and force_protocol != "none":
+            if ws.skills_enabled and ws.skills and "load_skill" not in caller_names:
+                owned.append(load_skill_spec())
+            if not native.passes_mcp:
+                for server in ws.mcp.servers.values():
+                    if server.error:
+                        list_warnings.append(scrub(server.error, server.secrets))
+                        continue
+                    try:
+                        infos = turn.visible_mcp_tools(ws, hub.list_tools(server))
+                    except McpError as exc:
+                        list_warnings.append(scrub(str(exc), server.secrets))
+                        continue
+                    for info in infos:
+                        if info.exposed_name in caller_names or info.exposed_name in mcp_by_name:
+                            continue
+                        owned.append(turn.mcp_tool_spec(info))
+                        mcp_by_name[info.exposed_name] = info
+
+        offered = [*tool_specs, *owned]
+        owned_names = {spec.name for spec in owned}
+
+        proto, proto_warnings = toolmod.choose_protocol(
+            tools=offered,
+            agent_kind=agent.kind,
+            api_style=agent.api_style,
+            tier_name=ti.tier,
+            structured_output=structured,
+            force=force_protocol,
         )
-        # seeded already has tool results; the filter above dropped system only.
-        # Re-apply by taking non-system from seeded and new system:
-        effective_messages = [{"role": "system", "content": effective_system}] + [
-            x for x in seeded if x.get("role") != "system"
-        ]
-    elif proto == "none" and tool_specs:
-        # tiny tier refusal — still call the model for text, without tools
-        pass
+        requested_max = req.get("max_tool_calls")
+        if requested_max is None and role_doc is not None and role_doc.max_tool_calls is not None:
+            requested_max = role_doc.max_tool_calls
+        mt_limit = toolmod.max_tool_calls_for(proto, ti.tier, requested_max)
 
-    # History trimming (ask-only, v1): provider sees trimmed copy; caller gets full history.
-    window = None
-    for v in (agent.context_window, agent.num_ctx):
-        if v:
-            window = max(window or 0, int(v))
-    if window is None and m is not None and getattr(m.info, "context_tokens", None):
-        try:
-            window = int(m.info.context_tokens)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            pass
-    if window is None and tier_spec is not None and tier_spec.num_ctx:
-        try:
-            window = int(tier_spec.num_ctx)
-        except (TypeError, ValueError):
-            pass
-    trim_spec = merge_history_trim(policy.history_trim, req.get("history_trim"))
-    provider_messages, trim_report_obj = trim_history(
-        effective_messages,
-        cfg=trim_spec,
-        context_window=window,
-        chars_per_token=policy.defaults.chars_per_token,
-    )
-    trim_report = trim_report_obj.to_dict()
-
-    # CLI delivery uses a flattened prompt (system + conversation summary)
-    if agent.kind == "cli":
-        parts: list[str] = []
-        if effective_system:
-            parts.append(effective_system)
-        for msg in provider_messages:
-            if msg.get("role") == "system":
-                continue
-            role = msg.get("role", "user")
-            if role == "tool":
-                parts.append(
-                    f"[tool_result id={msg.get('tool_call_id')} tool={msg.get('tool','')} ok={msg.get('ok')}]\n"
-                    f"{msg.get('content','')}"
-                )
-            elif role == "assistant":
-                parts.append(f"[assistant]\n{msg.get('content','')}")
-                for tc in msg.get("tool_calls") or []:
-                    parts.append(f"[prior_tool_call] {tc.get('tool')} {tc.get('args')}")
+        system_text = next((x.get("content", "") for x in seeded if x.get("role") == "system"), None)
+        effective_system = system_text
+        effective_messages = list(seeded)
+        if proto == "json_block" and offered:
+            instr = toolmod.json_block_instructions(offered, max_calls=mt_limit)
+            if effective_system:
+                effective_system = effective_system.rstrip() + "\n\n" + instr
             else:
-                parts.append(msg.get("content") or "")
-        cli_prompt = "\n\n".join(p for p in parts if p)
-    else:
-        cli_prompt = prompt_text
+                effective_system = instr
+            effective_messages = [{"role": "system", "content": effective_system}] + [
+                x for x in seeded if x.get("role") != "system"
+            ]
 
-    endpoint = available[agent_name]
-    to = float(req.get("timeout") or timeout or agent.timeout_seconds or policy.defaults.timeout_seconds)
-    mt = req.get("max_tokens") if req.get("max_tokens") is not None else (
-        max_tokens if max_tokens is not None else (max_tokens_for(m) if m else None)
-    )
-    temp = req.get("temperature") if req.get("temperature") is not None else temperature
-    work_cwd = req.get("cwd") or (str(cwd) if cwd else None)
+        window = None
+        for v in (agent.context_window, agent.num_ctx):
+            if v:
+                window = max(window or 0, int(v))
+        if window is None and m is not None and getattr(m.info, "context_tokens", None):
+            try:
+                window = int(m.info.context_tokens)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pass
+        if window is None and tier_spec is not None and tier_spec.num_ctx:
+            try:
+                window = int(tier_spec.num_ctx)
+            except (TypeError, ValueError):
+                pass
+        trim_spec = merge_history_trim(policy.history_trim, req.get("history_trim"))
 
-    extra_argv: list[str] = []
-    if agent.kind == "cli" and tool_specs and proto != "none":
-        # Prefer per-agent config override if present on the raw agent entry
-        agent_extra = None
-        raw_agents = (policy.raw or {}).get("agents") or {}
-        if isinstance(raw_agents.get(agent.name), dict):
-            agent_extra = raw_agents[agent.name].get("caller_tools_extra_args")
-        extra_argv = toolmod.cli_extra_args_for_caller_tools(agent.name, agent_extra)
+        to = float(req.get("timeout") or timeout or agent.timeout_seconds or policy.defaults.timeout_seconds)
+        mt = req.get("max_tokens") if req.get("max_tokens") is not None else (
+            max_tokens if max_tokens is not None else (max_tokens_for(m) if m else None)
+        )
+        temp = req.get("temperature") if req.get("temperature") is not None else temperature
 
-    agent_info = {
-        "name": agent.name,
-        "kind": agent.kind,
-        "provider": agent.provider,
-        "model": agent.model or agent.binary,
-        "tier": m.tier.name if m else ti.tier,
-    }
+        extra_argv: list[str] = []
+        if agent.kind == "cli" and offered and proto != "none":
+            agent_extra = None
+            raw_agents = (policy.raw or {}).get("agents") or {}
+            if isinstance(raw_agents.get(agent.name), dict):
+                agent_extra = raw_agents[agent.name].get("caller_tools_extra_args")
+            extra_argv = toolmod.cli_extra_args_for_caller_tools(agent.name, agent_extra)
+        if native.extra_argv:
+            extra_argv = [*extra_argv, *native.extra_argv]
 
-    def _fail(err: str, **extra: Any) -> dict[str, Any]:
+        agent_info = {
+            "name": agent.name,
+            "kind": agent.kind,
+            "provider": agent.provider,
+            "model": agent.model or agent.binary,
+            "tier": m.tier.name if m else ti.tier,
+        }
+        endpoint = available[agent_name]
+        run = runner or DispatchRunner()
+        warnings = list(proto_warnings) + list(list_warnings)
+
+        def _fail(err: str, *, messages_out: list[dict[str, Any]], trim_report: dict[str, Any],
+                  seconds: float = 0.0, **extra: Any) -> dict[str, Any]:
+            out = {
+                "ok": False,
+                "text": "",
+                "tool_calls": [],
+                "finish_reason": "error",
+                "protocol": proto,
+                "messages": messages_out,
+                "agent": agent_info,
+                "seconds": round(seconds, 3),
+                "error": err,
+                "usage": None,
+                "warnings": list(warnings) + list(extra.pop("warnings", [])),
+                "trim": trim_report,
+            }
+            out.update(extra)
+            return out
+
+        def _flatten_cli(system_value: str | None, provider_messages: list[dict[str, Any]]) -> str:
+            parts: list[str] = []
+            if system_value:
+                parts.append(system_value)
+            for msg in provider_messages:
+                if msg.get("role") == "system":
+                    continue
+                role = msg.get("role", "user")
+                if role == "tool":
+                    parts.append(
+                        f"[tool_result id={msg.get('tool_call_id')} tool={msg.get('tool','')} ok={msg.get('ok')}]\n"
+                        f"{msg.get('content','')}"
+                    )
+                elif role == "assistant":
+                    parts.append(f"[assistant]\n{msg.get('content','')}")
+                    for tc in msg.get("tool_calls") or []:
+                        parts.append(f"[prior_tool_call] {tc.get('tool')} {tc.get('args')}")
+                else:
+                    parts.append(msg.get("content") or "")
+            return "\n\n".join(p for p in parts if p)
+
+        messages_full = effective_messages
+        seconds = 0.0
+        usage = None
+        trim_report: dict[str, Any] = {"applied": False, "before_tokens": 0, "after_tokens": 0, "budget": None, "steps": []}
+        text = ""
+        finish = "stop"
+        caller_calls: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
+        saw_error: CallResult | None = None
+
+        for hop in range(1, turn.MAX_LOOPER_HOPS + 1):
+            provider_messages, trim_report_obj = trim_history(
+                messages_full,
+                cfg=trim_spec,
+                context_window=window,
+                chars_per_token=policy.defaults.chars_per_token,
+            )
+            trim_report = trim_report_obj.to_dict()
+            user_bits = [x.get("content", "") for x in provider_messages if x.get("role") == "user"]
+            prompt_text = user_bits[-1] if user_bits else (req.get("prompt") or "")
+            if agent.kind == "cli":
+                cli_prompt = _flatten_cli(effective_system, provider_messages)
+            else:
+                cli_prompt = prompt_text
+            try:
+                inv = prepare_invocation(
+                    agent, endpoint, cli_prompt, to, work_cwd,
+                    max_tokens=mt, temperature=temp,
+                    num_ctx=m.info.context_tokens if m and agent.kind == "local" else None,
+                    disable_thinking=bool(m and m.tier.disable_thinking),
+                    system=effective_system,
+                    messages=provider_messages if agent.kind != "cli" else [],
+                    tools=offered if proto != "none" else [],
+                    protocol=proto if proto != "none" else "none",
+                    max_tool_calls=mt_limit,
+                    extra_argv=extra_argv,
+                    extra_env=dict(native.extra_env),
+                )
+            except PromptTooLongError as exc:
+                return _fail(str(exc), messages_out=messages_full, trim_report=trim_report, seconds=seconds)
+
+            res: CallResult = run(inv)
+            seconds += res.seconds
+            usage = res.usage
+            warnings.extend(res.warnings or [])
+            if not res.ok:
+                saw_error = res
+                break
+
+            text = res.output or ""
+            tool_calls = list(res.tool_calls or [])
+            finish = res.finish_reason or "stop"
+            if proto == "json_block" and offered and not tool_calls:
+                text, tool_calls, parsed_warnings, block_finish = toolmod.parse_json_block(
+                    text, offered, max_calls=mt_limit,
+                )
+                warnings.extend(parsed_warnings)
+                if block_finish != "stop":
+                    finish = block_finish
+            if proto == "none":
+                tool_calls = []
+                finish = "stop"
+
+            if not tool_calls:
+                messages_full = toolmod.append_assistant_message(messages_full, text, [])
+                break
+
+            caller_calls, auto_calls, pending_calls, denied_calls = turn.classify_calls(
+                tool_calls,
+                caller_names=caller_names,
+                owned_names=owned_names,
+                mcp_by_name=mcp_by_name,
+                settings=ws.mcp,
+                ws=ws,
+                role=role_name,
+            )
+            # History keeps every call so a later approval can find its arguments.
+            public_calls = []
+            for call in tool_calls:
+                public_calls.append({k: v for k, v in call.items() if not str(k).startswith("_")})
+            messages_full = toolmod.append_assistant_message(messages_full, text, public_calls)
+
+            results = []
+            for call in [*auto_calls, *denied_calls]:
+                results.append(turn.execute_owned(call, ws=ws, hub=hub))
+            if results:
+                messages_full = toolmod.apply_tool_results(messages_full, results)
+
+            if caller_calls or pending_calls:
+                caller_calls = [{k: v for k, v in c.items() if not str(k).startswith("_")} for c in caller_calls]
+                pending = [turn.pending_payload(c, mcp_by_name.get(str(c.get("tool")))) for c in pending_calls]
+                finish = "approval_required" if pending else "tool_calls"
+                break
+            if hop >= turn.MAX_LOOPER_HOPS:
+                warnings.append(
+                    f"stopped after {turn.MAX_LOOPER_HOPS} looper-owned tool hops; "
+                    "send the messages back to continue"
+                )
+                caller_calls = []
+                pending = []
+                finish = "stop"
+                break
+            # Only looper-owned calls ran. Ask the model to continue inside this turn.
+            caller_calls = []
+            pending = []
+
+        if saw_error is not None:
+            out = _fail(
+                saw_error.error or "failed",
+                messages_out=messages_full,
+                trim_report=trim_report,
+                seconds=seconds,
+            )
+            out["stderr"] = saw_error.stderr
+            return out
+
         out = {
-            "ok": False,
-            "text": "",
-            "tool_calls": [],
-            "finish_reason": "error",
+            "ok": True,
+            "text": text,
+            "tool_calls": caller_calls,
+            "finish_reason": finish,
             "protocol": proto,
-            "messages": effective_messages,
+            "messages": messages_full,
             "agent": agent_info,
-            "seconds": 0.0,
-            "error": err,
-            "usage": None,
-            "warnings": list(proto_warnings) + list(extra.pop("warnings", [])),
+            "seconds": round(seconds, 3),
+            "error": None,
+            "usage": usage,
+            "warnings": warnings,
             "trim": trim_report,
         }
-        out.update(extra)
+        if pending:
+            out["pending"] = pending
         return out
+    finally:
+        hub.close()
 
-    try:
-        inv = prepare_invocation(
-            agent, endpoint, cli_prompt, to, work_cwd,
-            max_tokens=mt, temperature=temp,
-            num_ctx=m.info.context_tokens if m and agent.kind == "local" else None,
-            disable_thinking=bool(m and m.tier.disable_thinking),
-            system=effective_system,
-            messages=provider_messages if agent.kind != "cli" else [],
-            tools=tool_specs if proto != "none" else [],
-            protocol=proto if proto != "none" else "none",
-            max_tool_calls=mt_limit,
-            extra_argv=extra_argv,
-        )
-    except PromptTooLongError as exc:
-        return _fail(str(exc))
-
-    run = runner or DispatchRunner()
-    res: CallResult = run(inv)
-
-    text = res.output if res.ok else ""
-    tool_calls = list(res.tool_calls or [])
-    finish = res.finish_reason or ("stop" if res.ok else "error")
-    warnings = list(proto_warnings) + list(res.warnings or [])
-
-    # CLI / FakeRunner path: parse json_block from text when the runner didn't
-    if res.ok and proto == "json_block" and tool_specs and not tool_calls:
-        text, tool_calls, w, block_finish = toolmod.parse_json_block(text, tool_specs, max_calls=mt_limit)
-        warnings.extend(w)
-        if block_finish != "stop":
-            finish = block_finish
-
-    if proto == "none" and tool_specs:
-        # Ensure we never return tool_calls for tiny-tier refusal
-        tool_calls = []
-        finish = "stop" if res.ok else "error"
-
-    messages_out = toolmod.append_assistant_message(effective_messages, text, tool_calls) if res.ok else effective_messages
-
-    out: dict[str, Any] = {
-        "ok": res.ok,
-        "text": text if res.ok else "",
-        "tool_calls": tool_calls if res.ok else [],
-        "finish_reason": finish if res.ok else "error",
-        "protocol": proto,
-        "messages": messages_out,
-        "agent": agent_info,
-        "seconds": round(res.seconds, 3),
-        "error": res.error,
-        "usage": res.usage,
-        "warnings": warnings,
-        "trim": trim_report,
-    }
-    if not res.ok:
-        out["stderr"] = res.stderr
-    return out
-
-
-# --------------------------------------------------------------------------- keys (for serve)
 
 
 def put_key(policy: Policy, provider_or_env: str, value: str, *, use_keyring: bool = False) -> dict[str, Any]:
