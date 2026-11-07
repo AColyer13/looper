@@ -47,6 +47,7 @@ CAPABILITIES = [
     "skills",
     "mcp",
     "mcp_approval",
+    "mcp_match_v2",
 ]
 
 

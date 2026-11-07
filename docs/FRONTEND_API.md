@@ -1,4 +1,4 @@
-# looper Frontend API (api_version 1, package 0.7.0)
+# looper Frontend API (api_version 1, package 0.7.1)
 
 Stable, versioned machine interface for apps that sit on top of looper
 (e.g. a themed UI). **looper stays persona-agnostic** — frontends may attach
@@ -17,17 +17,22 @@ looper version --json
 ```json
 {
   "name": "looper",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "api_version": 1,
   "capabilities": [
     "version", "doctor", "plan", "run_events", "ask", "ask_stdin",
     "ask_tools", "tool_calls", "tool_results", "history_trim", "serve",
     "team_override", "assign_override", "role_labels", "meta",
     "keys", "models_discover",
-    "workspace", "skills", "mcp", "mcp_approval"
+    "workspace", "skills", "mcp", "mcp_approval", "mcp_match_v2"
   ]
 }
 ```
+
+`mcp_match_v2` means policy lists accept `verb:`, `word:`, and `re:` in addition
+to fnmatch globs (see the README). Frontends that generate role files should
+check for this capability and emit one `verb:` line per verb group instead of
+glob permutations. Plain globs are unchanged when the capability is absent.
 
 A frontend should refuse to start (or show a clear install prompt) when:
 
